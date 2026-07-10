@@ -513,7 +513,7 @@ class TencentSubtitleBurnNode:
                 json.dumps(raw_payload, ensure_ascii=False, indent=2),
             )
         except Exception as exc:
-            _log_subtitle_burn("failed", stage=current_stage, error_type=type(exc).__name__, message=str(exc))
+            _log_subtitle_burn("failed", failed_stage=current_stage, error_type=type(exc).__name__, message=str(exc))
             raise
 
 

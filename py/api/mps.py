@@ -245,8 +245,32 @@ def _extract_status(response: dict[str, Any]) -> tuple[str, str]:
     return "UNKNOWN", ""
 
 
+def _smart_subtitle_failure_message(response: dict[str, Any]) -> str:
+    workflow_task = response.get("WorkflowTask")
+    if not isinstance(workflow_task, dict):
+        return ""
+
+    metadata = workflow_task.get("MetaData")
+    has_audio = bool(metadata.get("AudioStreamSet")) if isinstance(metadata, dict) else True
+    for subtitle_task in workflow_task.get("SmartSubtitlesTaskResult") or []:
+        if not isinstance(subtitle_task, dict):
+            continue
+        for task_name in ("AsrFullTextTask", "TransTextTask", "PureSubtitleTransTask", "OcrFullTextTask"):
+            task = subtitle_task.get(task_name)
+            if not isinstance(task, dict) or str(task.get("Status") or "").upper() not in {"FAIL", "FAILED"}:
+                continue
+            if not has_audio:
+                return "Input video has no audio stream. Tencent MPS cannot recognize subtitles from a silent video; add speech or a TTS/audio track first."
+            error_code = task.get("ErrCodeExt") or task.get("ErrCode") or "unknown"
+            return f"Tencent smart subtitle task failed ({task_name}, error={error_code})."
+    return ""
+
+
 def normalize_task_detail(task_id: str, response: dict[str, Any]) -> TencentTaskSummary:
     status, message = _extract_status(response)
+    smart_subtitle_failure = _smart_subtitle_failure_message(response)
+    if smart_subtitle_failure:
+        status, message = "FAILED", smart_subtitle_failure
     workflow_subtitle_urls, workflow_video_urls = _workflow_result_paths(response)
     all_paths = _dedupe_keep_order(_collect_strings(response))
     subtitle_urls = workflow_subtitle_urls or [value for value in all_paths if any(value.lower().endswith(ext) for ext in (".vtt", ".srt", ".ass", ".ssa"))]
