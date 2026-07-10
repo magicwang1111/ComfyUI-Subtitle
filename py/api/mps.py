@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import requests
@@ -59,22 +59,6 @@ def _build_output_storage(config: TencentCloudConfig) -> dict[str, Any] | None:
     return None
 
 
-def _build_oss_std_ext_info(config: TencentCloudConfig) -> str:
-    if not config.has_oss_config():
-        raise RuntimeError("OSS output requested but OSS config is incomplete.")
-    payload = {
-        "cos_info": {
-            "storage_type": "oss",
-            "bucket": config.oss_bucket,
-            "region": config.region,
-            "id": config.oss_access_key_id,
-            "key": config.oss_access_key_secret,
-            "host": config.oss_endpoint,
-        }
-    }
-    return canonical_json(payload)
-
-
 def build_smart_subtitle_user_ext_para(*, accurate_mode: bool = False, need_wordlist: bool = False, adapt_words: str = "", target_language: str = "") -> dict[str, Any]:
     payload: dict[str, Any] = {}
     if accurate_mode:
@@ -83,8 +67,9 @@ def build_smart_subtitle_user_ext_para(*, accurate_mode: bool = False, need_word
         payload["need_wordlist"] = 1
     if adapt_words.strip():
         payload["adapt_words"] = adapt_words.strip()
-    if target_language.strip():
-        payload["translate_dst_language"] = target_language.strip()
+    normalized_target_language = target_language.strip().lower()
+    if normalized_target_language and normalized_target_language != "auto":
+        payload["translate_dst_language"] = normalized_target_language
     return payload
 
 
@@ -122,10 +107,8 @@ def create_smart_subtitle_task(
     output_storage = _build_output_storage(config)
     if output_storage is not None:
         payload["OutputStorage"] = output_storage
-    elif config.has_oss_config():
-        payload["StdExtInfo"] = _build_oss_std_ext_info(config)
     else:
-        raise RuntimeError("No valid output storage is configured for SmartSubtitlesTask.")
+        raise RuntimeError("No valid COS output storage is configured for SmartSubtitlesTask.")
     response = _post_mps(config, PROCESS_MEDIA_ACTION, payload)
     task_id = str(response.get("TaskId") or "").strip()
     if not task_id:
@@ -173,10 +156,8 @@ def create_burn_subtitle_task(
     output_storage = _build_output_storage(config)
     if output_storage is not None:
         payload["OutputStorage"] = output_storage
-    elif config.has_oss_config():
-        payload["StdExtInfo"] = _build_oss_std_ext_info(config)
     else:
-        raise RuntimeError("No valid output storage is configured for burn subtitle task.")
+        raise RuntimeError("No valid COS output storage is configured for burn subtitle task.")
     response = _post_mps(config, PROCESS_MEDIA_ACTION, payload)
     task_id = str(response.get("TaskId") or "").strip()
     if not task_id:
@@ -219,6 +200,35 @@ def _dedupe_keep_order(values: list[str]) -> list[str]:
     return result
 
 
+def _workflow_result_paths(response: dict[str, Any]) -> tuple[list[str], list[str]]:
+    workflow_task = response.get("WorkflowTask")
+    if not isinstance(workflow_task, dict):
+        return [], []
+
+    subtitle_paths: list[str] = []
+    for subtitle_task in workflow_task.get("SmartSubtitlesTaskResult") or []:
+        if not isinstance(subtitle_task, dict):
+            continue
+        for task_name in ("AsrFullTextTask", "TransTextTask", "PureSubtitleTransTask", "OcrFullTextTask"):
+            task = subtitle_task.get(task_name)
+            output = task.get("Output") if isinstance(task, dict) else None
+            if not isinstance(output, dict):
+                continue
+            path = output.get("SubtitlePath") or output.get("Path")
+            if isinstance(path, str) and path.strip():
+                subtitle_paths.append(path.strip())
+
+    video_paths: list[str] = []
+    for media_result in workflow_task.get("MediaProcessResultSet") or []:
+        transcode_task = media_result.get("TranscodeTask") if isinstance(media_result, dict) else None
+        output = transcode_task.get("Output") if isinstance(transcode_task, dict) else None
+        path = output.get("Path") if isinstance(output, dict) else None
+        if isinstance(path, str) and path.strip():
+            video_paths.append(path.strip())
+
+    return _dedupe_keep_order(subtitle_paths), _dedupe_keep_order(video_paths)
+
+
 def _extract_status(response: dict[str, Any]) -> tuple[str, str]:
     candidates = [
         response.get("Status"),
@@ -237,9 +247,10 @@ def _extract_status(response: dict[str, Any]) -> tuple[str, str]:
 
 def normalize_task_detail(task_id: str, response: dict[str, Any]) -> TencentTaskSummary:
     status, message = _extract_status(response)
+    workflow_subtitle_urls, workflow_video_urls = _workflow_result_paths(response)
     all_paths = _dedupe_keep_order(_collect_strings(response))
-    subtitle_urls = [value for value in all_paths if any(value.lower().endswith(ext) for ext in (".vtt", ".srt", ".ass", ".ssa"))]
-    video_urls = [value for value in all_paths if any(value.lower().endswith(ext) for ext in (".mp4", ".mov", ".mkv", ".m3u8"))]
+    subtitle_urls = workflow_subtitle_urls or [value for value in all_paths if any(value.lower().endswith(ext) for ext in (".vtt", ".srt", ".ass", ".ssa"))]
+    video_urls = workflow_video_urls or [value for value in all_paths if any(value.lower().endswith(ext) for ext in (".mp4", ".mov", ".mkv", ".m3u8"))]
     return TencentTaskSummary(
         task_id=str(task_id),
         status=status,
@@ -256,6 +267,7 @@ def wait_for_task(
     *,
     poll_interval: float | None = None,
     max_wait_seconds: int | None = None,
+    on_progress: Callable[[TencentTaskSummary, float], None] | None = None,
 ) -> tuple[TencentTaskSummary, dict[str, Any]]:
     started = time.monotonic()
     interval = float(poll_interval or config.poll_interval)
@@ -263,6 +275,9 @@ def wait_for_task(
     while True:
         response = describe_task_detail(config, task_id)
         summary = normalize_task_detail(task_id, response)
+        elapsed_seconds = time.monotonic() - started
+        if on_progress is not None:
+            on_progress(summary, elapsed_seconds)
         if summary.status in {"SUCCESS", "FINISH", "FINISHED"}:
             return summary, response
         if summary.status in {"FAILED", "FAIL", "ABORTED"}:

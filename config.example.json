@@ -7,17 +7,10 @@
   "tencent_request_timeout": 120,
   "tencent_poll_interval": 5.0,
   "tencent_max_wait_seconds": 3600,
-  "tencent_cos_bucket": "",
+  "tencent_cos_bucket": "goumee-1444407842",
   "tencent_cos_input_prefix": "subtitle-input/",
   "tencent_cos_output_prefix": "subtitle-output/",
   "tencent_cos_burn_output_prefix": "subtitle-burn-output/",
   "tencent_subtitle_definition": 122,
-  "tencent_transcode_definition": 101005,
-  "area": "china",
-  "oss_endpoint": "oss-cn-hangzhou.aliyuncs.com",
-  "oss_access_key_id": "demo-oss-access-key-id",
-  "oss_access_key_secret": "demo-oss-access-key-secret",
-  "oss_bucket": "example-bucket",
-  "oss_prefix": "kling_uploads",
-  "oss_signed_url_expires": 86400
+  "tencent_transcode_definition": 101005
 }

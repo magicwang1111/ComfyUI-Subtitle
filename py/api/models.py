@@ -14,30 +14,16 @@ class TencentCloudConfig:
     request_timeout: int = 120
     poll_interval: float = 5.0
     max_wait_seconds: int = 3600
-    cos_bucket: str = ""
+    cos_bucket: str = "goumee-1444407842"
     cos_input_prefix: str = "subtitle-input/"
     cos_output_prefix: str = "subtitle-output/"
     cos_burn_output_prefix: str = "subtitle-burn-output/"
+    cos_signed_url_expires: int = 86400
     subtitle_definition: int = 122
     transcode_definition: int = 101005
-    area: str = "china"
-    oss_endpoint: str = ""
-    oss_access_key_id: str = ""
-    oss_access_key_secret: str = ""
-    oss_bucket: str = ""
-    oss_prefix: str = "kling_uploads"
-    oss_signed_url_expires: int = 86400
 
     def has_cos_output(self) -> bool:
         return bool(str(self.cos_bucket).strip())
-
-    def has_oss_config(self) -> bool:
-        return bool(
-            str(self.oss_endpoint).strip()
-            and str(self.oss_access_key_id).strip()
-            and str(self.oss_access_key_secret).strip()
-            and str(self.oss_bucket).strip()
-        )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

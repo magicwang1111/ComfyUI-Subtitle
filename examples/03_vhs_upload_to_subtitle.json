@@ -1,0 +1,53 @@
+{
+  "id": "ComfyUI-Subtitle-vhs-upload-to-subtitle",
+  "revision": 0,
+  "last_node_id": 2,
+  "last_link_id": 1,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "VHS_LoadVideo",
+      "pos": [40, 60],
+      "size": [360, 440],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": null, "slot_index": 0},
+        {"name": "frame_count", "type": "INT", "links": null, "slot_index": 1},
+        {"name": "audio", "type": "AUDIO", "links": null, "slot_index": 2},
+        {"name": "video_info", "type": "VHS_VIDEOINFO", "links": [1], "slot_index": 3}
+      ],
+      "properties": {"Node name for S&R": "Load Video (Upload) 🎥🅥🅗🅢"},
+      "widgets_values": ["", 0, 0, 0, 0, 1]
+    },
+    {
+      "id": 2,
+      "type": "TencentSubtitleBurn",
+      "pos": [470, 60],
+      "size": [430, 560],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {"name": "vhs_video_info", "type": "VHS_VIDEOINFO", "link": 1}
+      ],
+      "outputs": [
+        {"name": "video_file_path", "type": "STRING", "links": null, "slot_index": 0},
+        {"name": "subtitle_file_path", "type": "STRING", "links": null, "slot_index": 1},
+        {"name": "video_url", "type": "STRING", "links": null, "slot_index": 2},
+        {"name": "subtitle_url", "type": "STRING", "links": null, "slot_index": 3},
+        {"name": "status", "type": "STRING", "links": null, "slot_index": 4},
+        {"name": "raw_json", "type": "STRING", "links": null, "slot_index": 5}
+      ],
+      "properties": {"Node name for S&R": "Tencent Subtitle Burn"},
+      "widgets_values": ["", "srt", "bottom", "simkai.ttf", 24, "#FFFFFF", 0.9, 0.2, false, false, "", "auto"]
+    }
+  ],
+  "links": [[1, 1, 3, 2, 2, "VHS_VIDEOINFO"]],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

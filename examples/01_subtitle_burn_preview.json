@@ -6,7 +6,7 @@
   "nodes": [
     {
       "id": 1,
-      "type": "Tencent Subtitle Burn",
+      "type": "TencentSubtitleBurn",
       "pos": [60, 60],
       "size": [460, 640],
       "flags": {},
@@ -22,28 +22,11 @@
         {"name": "raw_json", "type": "STRING", "links": null, "slot_index": 5}
       ],
       "properties": {"Node name for S&R": "Tencent Subtitle Burn"},
-      "widgets_values": [
-        "",
-        "srt",
-        "bottom",
-        "simkai.ttf",
-        24,
-        "#FFFFFF",
-        0.9,
-        0.2,
-        false,
-        false,
-        "",
-        "",
-        "demo_subtitle",
-        "D:/path/to/your/video.mp4",
-        0,
-        0
-      ]
+      "widgets_values": ["", "srt", "bottom", "simkai.ttf", 24, "#FFFFFF", 0.9, 0.2, false, false, "", "auto"]
     },
     {
       "id": 2,
-      "type": "Tencent Preview Video",
+      "type": "TencentPreviewVideo",
       "pos": [620, 60],
       "size": [360, 220],
       "flags": {},

@@ -14,30 +14,24 @@ from .api import (
     create_smart_subtitle_task,
     download_file,
     load_tencent_cloud_config,
-    upload_file_to_oss,
+    sign_cos_url,
+    upload_file_to_cos,
     wait_for_task,
 )
 
 NODE_CATEGORY = "Tencent/Subtitle"
-VIDEO_EXTENSIONS = {"mp4", "mov", "mkv", "avi", "webm", "m4v"}
 DEFAULT_VIDEO_FILENAME_PREFIX = "tencent/subtitle/video"
 DEFAULT_SUBTITLE_FILENAME_PREFIX = "tencent/subtitle/subtitle"
 DEFAULT_PREVIEW_FILENAME_PREFIX = "tencent/subtitle/preview"
+DEFAULT_FILENAME_PREFIX = "tencent_subtitle"
+SUBTITLE_FONTS = ["simkai.ttf", "simhei.ttf", "simsun.ttf", "msyh.ttf", "msyhbd.ttf", "hkjgt.ttf", "dhttx.ttf"]
+TARGET_LANGUAGES = ["auto", "zh", "en", "ja", "ko", "fr", "de", "es", "pt", "ru", "it", "th", "vi", "id", "ms", "ar", "hi"]
 
 
-def _list_input_videos():
-    input_dir = folder_paths.get_input_directory()
-    files = []
-    if os.path.isdir(input_dir):
-        for name in os.listdir(input_dir):
-            full_path = os.path.join(input_dir, name)
-            if not os.path.isfile(full_path):
-                continue
-            parts = name.rsplit(".", 1)
-            if len(parts) == 2 and parts[1].lower() in VIDEO_EXTENSIONS:
-                files.append(name)
-    files = sorted(files)
-    return files or [""]
+def _log_subtitle_burn(stage: str, **details) -> None:
+    """Write concise, non-sensitive task progress to the ComfyUI console."""
+    payload = {"stage": stage, **details}
+    print(f"[TencentSubtitleBurn] {json.dumps(payload, ensure_ascii=False, default=str)}", flush=True)
 
 
 def _saved_result(filename, subfolder, folder_type):
@@ -84,20 +78,51 @@ def _read_text_file(file_path: str) -> str:
     raise ValueError(f"Failed to read subtitle file with supported encodings: {file_path}")
 
 
-def _resolve_video_input(video: str, file_path: str) -> str:
-    raw_file_path = str(file_path or "").strip()
-    if raw_file_path:
-        normalized = os.path.abspath(os.path.expanduser(raw_file_path))
-        if not os.path.isfile(normalized):
-            raise ValueError(f"file_path is not a valid local video file: {normalized}")
-        return normalized
+def _resolve_local_video_path(value: str) -> str:
+    candidate = str(value or "").strip()
+    if folder_paths.exists_annotated_filepath(candidate):
+        return folder_paths.get_annotated_filepath(candidate)
 
-    selected_video = str(video or "").strip()
-    if not selected_video:
-        raise ValueError("Provide a local file_path or upload/select a video from the input directory.")
-    if not folder_paths.exists_annotated_filepath(selected_video):
-        raise ValueError(f"Invalid uploaded video file: {selected_video}")
-    return folder_paths.get_annotated_filepath(selected_video)
+    normalized = os.path.abspath(os.path.expanduser(candidate))
+    if not os.path.isfile(normalized):
+        raise ValueError(f"Local video file does not exist: {normalized}")
+    return normalized
+
+
+def _resolve_vhs_video_path(prompt, unique_id) -> str:
+    if not isinstance(prompt, dict):
+        raise ValueError("VHS input requires ComfyUI prompt context.")
+    current_node = prompt.get(str(unique_id))
+    inputs = current_node.get("inputs") if isinstance(current_node, dict) else None
+    link = inputs.get("vhs_video_info") if isinstance(inputs, dict) else None
+    if not isinstance(link, list) or len(link) < 2:
+        raise ValueError("VHS input must be linked from a VHS Load Video node.")
+
+    source_node = prompt.get(str(link[0]))
+    source_inputs = source_node.get("inputs") if isinstance(source_node, dict) else None
+    source_type = source_node.get("class_type") if isinstance(source_node, dict) else ""
+    if source_type not in {"VHS_LoadVideo", "VHS_LoadVideoFFmpeg", "VHS_LoadVideoPath", "VHS_LoadVideoFFmpegPath"}:
+        raise ValueError("vhs_video_info must come from VHS Load Video or VHS Load Video (Path).")
+    video_path = source_inputs.get("video") if isinstance(source_inputs, dict) else ""
+    if not isinstance(video_path, str) or not video_path.strip():
+        raise ValueError("The linked VHS Load Video node must use a local video path.")
+    return _resolve_local_video_path(video_path)
+
+
+def _resolve_video_input(local_video: str, video_file: str, video_url: str, vhs_video_info=None, prompt=None, unique_id=None) -> str:
+    local_values = [str(value or "").strip() for value in (local_video, video_file) if str(value or "").strip()]
+    normalized_url = str(video_url or "").strip()
+    has_vhs_input = vhs_video_info is not None
+    if len(local_values) + bool(normalized_url) + has_vhs_input != 1:
+        raise ValueError("Provide exactly one source: local_video, video_file, video_url, or vhs_video_info.")
+    if normalized_url:
+        parsed = urllib.parse.urlparse(normalized_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("video_url must be a valid HTTP(S) URL.")
+        return download_file(normalized_url, folder_paths.get_temp_directory(), filename_prefix="tencent_subtitle_input")
+    if has_vhs_input:
+        return _resolve_vhs_video_path(prompt, unique_id)
+    return _resolve_local_video_path(local_values[0])
 
 
 def _make_output_target(filename_prefix: str, suffix: str):
@@ -247,7 +272,6 @@ def _position_to_ass_alignment(position: str) -> int:
 
 def _cues_to_ass(cues, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str) -> str:
     primary_color = _normalize_color_to_ass(font_color, font_alpha)
-    back_color = _normalize_color_to_ass("#000000", background_alpha)
     alignment = _position_to_ass_alignment(subtitle_position)
     safe_font_name = str(font_name or "SimHei").strip() or "SimHei"
     lines = [
@@ -260,7 +284,9 @@ def _cues_to_ass(cues, *, font_name: str, font_size: int, font_color: str, font_
         "",
         "[V4+ Styles]",
         "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding",
-        f"Style: Default,{safe_font_name},{int(font_size)},{primary_color},&H000000FF,&H00000000,{back_color},0,0,0,0,100,100,0,0,3,1,0,{alignment},40,40,40,1",
+        # BorderStyle 1 renders a black outline around the glyphs.  The former
+        # BorderStyle 3 rendered BackColour as a rectangular black subtitle box.
+        f"Style: Default,{safe_font_name},{int(font_size)},{primary_color},&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,{alignment},40,40,40,1",
         "",
         "[Events]",
         "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text",
@@ -271,8 +297,13 @@ def _cues_to_ass(cues, *, font_name: str, font_size: int, font_color: str, font_
     return "\n".join(lines) + "\n"
 
 
-def _build_local_subtitle_text(original_text: str, subtitle_format: str, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str) -> tuple[str, str]:
-    cues = _parse_subtitle_cues(original_text)
+def _select_subtitle_language(cues, target_language: str):
+    line_index = -1 if str(target_language or "").strip().lower() not in {"", "auto"} else 0
+    return [(start, end, [text_lines[line_index]]) for start, end, text_lines in cues if text_lines]
+
+
+def _build_local_subtitle_text(original_text: str, subtitle_format: str, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str, target_language: str = "") -> tuple[str, str]:
+    cues = _select_subtitle_language(_parse_subtitle_cues(original_text), target_language)
     fmt = str(subtitle_format or "vtt").strip().lower()
     if fmt == "srt":
         return _cues_to_srt(cues), "srt"
@@ -286,13 +317,11 @@ def _build_local_subtitle_text(original_text: str, subtitle_format: str, *, font
             background_alpha=background_alpha,
             subtitle_position=subtitle_position,
         ), "ass"
-    if original_text.lstrip().startswith("WEBVTT"):
-        return original_text if original_text.endswith("\n") else original_text + "\n", "vtt"
     return _cues_to_vtt(cues), "vtt"
 
 
-def _build_burn_subtitle_ass_text(original_text: str, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str) -> str:
-    cues = _parse_subtitle_cues(original_text)
+def _build_burn_subtitle_ass_text(original_text: str, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str, target_language: str = "") -> str:
+    cues = _select_subtitle_language(_parse_subtitle_cues(original_text), target_language)
     return _cues_to_ass(
         cues,
         font_name=font_name,
@@ -309,10 +338,10 @@ class TencentSubtitleBurnNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "video": (_list_input_videos(), {"video_upload": True}),
+                "local_video": ("STRING", {"default": "", "multiline": False, "placeholder": "Upload a local video or enter its full path"}),
                 "subtitle_format": (["vtt", "srt", "ass"],),
                 "subtitle_position": (["bottom", "top", "middle", "bottom-left", "bottom-right", "top-left", "top-right"],),
-                "font_name": ("STRING", {"default": "simkai.ttf", "multiline": False}),
+                "font_name": (SUBTITLE_FONTS, {"default": "simkai.ttf"}),
                 "font_size": ("INT", {"default": 24, "min": 1, "max": 4096}),
                 "font_color": ("STRING", {"default": "#FFFFFF", "multiline": False}),
                 "font_alpha": ("FLOAT", {"default": 0.9, "min": 0.0, "max": 1.0, "step": 0.05}),
@@ -320,13 +349,16 @@ class TencentSubtitleBurnNode:
                 "accurate_mode": ("BOOLEAN", {"default": False}),
                 "need_wordlist": ("BOOLEAN", {"default": False}),
                 "adapt_words": ("STRING", {"default": "", "multiline": True}),
-                "target_language": ("STRING", {"default": "", "multiline": False}),
-                "filename_prefix": ("STRING", {"default": "tencent_subtitle", "multiline": False}),
+                "target_language": (TARGET_LANGUAGES, {"default": "auto", "tooltip": "auto outputs the recognized source language; another value outputs only that translation."}),
             },
             "optional": {
-                "file_path": ("STRING", {"default": "", "multiline": False}),
-                "subtitle_definition_id": ("INT", {"default": 0, "min": 0, "max": 99999999}),
-                "transcode_definition_id": ("INT", {"default": 0, "min": 0, "max": 99999999}),
+                "video_file": ("STRING", {"forceInput": True}),
+                "video_url": ("STRING", {"forceInput": True}),
+                "vhs_video_info": ("VHS_VIDEOINFO",),
+            },
+            "hidden": {
+                "prompt": "PROMPT",
+                "unique_id": "UNIQUE_ID",
             },
         }
 
@@ -337,7 +369,7 @@ class TencentSubtitleBurnNode:
 
     def run(
         self,
-        video,
+        local_video,
         subtitle_format,
         subtitle_position,
         font_name,
@@ -349,95 +381,140 @@ class TencentSubtitleBurnNode:
         need_wordlist,
         adapt_words,
         target_language,
-        filename_prefix,
-        file_path="",
-        subtitle_definition_id=0,
-        transcode_definition_id=0,
+        video_file="",
+        video_url="",
+        vhs_video_info=None,
+        prompt=None,
+        unique_id=None,
     ):
-        config = load_tencent_cloud_config()
-        local_video_input = _resolve_video_input(video, file_path)
-
-        if not config.has_oss_config():
-            raise ValueError("Current subtitle node is configured for OSS input. Please complete oss_* fields in config.local.json.")
-
-        oss_video_url, _ = upload_file_to_oss(config, local_video_input)
-        input_source = TencentInputSource(source_type="URL", url=oss_video_url, local_file_path=local_video_input)
-
-        subtitle_submit_summary, _, subtitle_submit_response = create_smart_subtitle_task(
-            config,
-            input_source,
-            definition=subtitle_definition_id or None,
-            accurate_mode=accurate_mode,
-            need_wordlist=need_wordlist,
-            adapt_words=adapt_words,
-            target_language=target_language,
-        )
-        subtitle_summary, subtitle_response = wait_for_task(config, subtitle_submit_summary.task_id)
-        if not subtitle_summary.subtitle_urls:
-            raise RuntimeError(f"Subtitle task completed without subtitle URLs: {subtitle_summary.to_dict()}")
-
-        remote_subtitle_url = subtitle_summary.subtitle_urls[0]
-        generated_subtitle_local_path = download_file(remote_subtitle_url, folder_paths.get_temp_directory(), filename_prefix=f"{filename_prefix}_generated_subtitle")
-        generated_subtitle_text = _read_text_file(generated_subtitle_local_path)
-
-        local_subtitle_text, local_subtitle_suffix = _build_local_subtitle_text(
-            generated_subtitle_text,
-            subtitle_format,
-            font_name=font_name,
-            font_size=font_size,
-            font_color=font_color,
-            font_alpha=font_alpha,
-            background_alpha=background_alpha,
-            subtitle_position=subtitle_position,
-        )
-        local_subtitle_path = _write_text_output(local_subtitle_text, f"{DEFAULT_SUBTITLE_FILENAME_PREFIX}_{filename_prefix}", local_subtitle_suffix)
-
-        burn_ass_text = _build_burn_subtitle_ass_text(
-            generated_subtitle_text,
-            font_name=font_name,
-            font_size=font_size,
-            font_color=font_color,
-            font_alpha=font_alpha,
-            background_alpha=background_alpha,
-            subtitle_position=subtitle_position,
-        )
-        burn_ass_local_path = _write_text_output(burn_ass_text, f"{DEFAULT_SUBTITLE_FILENAME_PREFIX}_{filename_prefix}_burn", "ass")
-        burn_subtitle_url, _ = upload_file_to_oss(config, burn_ass_local_path)
-
-        burn_submit_summary, _, burn_submit_response = create_burn_subtitle_task(
-            config,
-            input_source,
-            subtitle_url=burn_subtitle_url,
-            definition=transcode_definition_id or None,
-        )
-        burn_summary, burn_response = wait_for_task(config, burn_submit_summary.task_id)
-        if not burn_summary.video_urls:
-            raise RuntimeError(f"Burn subtitle task completed without video URLs: {burn_summary.to_dict()}")
-
-        remote_video_url = burn_summary.video_urls[0]
-        local_video_path = download_file(remote_video_url, folder_paths.get_output_directory(), filename_prefix=f"{DEFAULT_VIDEO_FILENAME_PREFIX}_{filename_prefix}")
+        current_stage = "config_loading"
         try:
-            _register_output_asset(local_video_path)
-        except Exception:
-            pass
+            config = load_tencent_cloud_config()
+            filename_prefix = DEFAULT_FILENAME_PREFIX
+            _log_subtitle_burn("config_loaded", region=config.region, cos_bucket=config.cos_bucket, target_language=target_language or "auto")
 
-        raw_payload = {
-            "oss_video_url": oss_video_url,
-            "burn_subtitle_url": burn_subtitle_url,
-            "subtitle_submit": subtitle_submit_response,
-            "subtitle_result": subtitle_response,
-            "burn_submit": burn_submit_response,
-            "burn_result": burn_response,
-        }
+            current_stage = "input_resolving"
+            local_video_input = _resolve_video_input(local_video, video_file, video_url, vhs_video_info, prompt, unique_id)
+            _log_subtitle_burn("input_ready", local_video_path=local_video_input, file_size_bytes=os.path.getsize(local_video_input))
 
-        return (
-            local_video_path,
-            local_subtitle_path,
-            remote_video_url,
-            remote_subtitle_url,
-            burn_summary.status,
-            json.dumps(raw_payload, ensure_ascii=False, indent=2),
-        )
+            if not config.has_cos_output():
+                raise ValueError("Current subtitle node requires Tencent COS output. Please complete tencent_cos_bucket in config.local.json.")
+
+            current_stage = "video_uploading"
+            cos_video_object = upload_file_to_cos(config, local_video_input)
+            _log_subtitle_burn("video_uploaded", cos_object=cos_video_object.object_key)
+            input_source = TencentInputSource(source_type="COS", cos_object=cos_video_object, local_file_path=local_video_input)
+
+            current_stage = "subtitle_submitting"
+            subtitle_submit_summary, _, subtitle_submit_response = create_smart_subtitle_task(
+                config,
+                input_source,
+                accurate_mode=accurate_mode,
+                need_wordlist=need_wordlist,
+                adapt_words=adapt_words,
+                target_language=target_language,
+            )
+            _log_subtitle_burn("subtitle_submitted", task_id=subtitle_submit_summary.task_id)
+            current_stage = "subtitle_waiting"
+            subtitle_summary, subtitle_response = wait_for_task(
+                config,
+                subtitle_submit_summary.task_id,
+                on_progress=lambda summary, elapsed: _log_subtitle_burn(
+                    "subtitle_status", task_id=summary.task_id, status=summary.status, elapsed_seconds=round(elapsed, 1)
+                ),
+            )
+            if not subtitle_summary.subtitle_urls:
+                raise RuntimeError(f"Subtitle task completed without subtitle URLs: {subtitle_summary.to_dict()}")
+            _log_subtitle_burn("subtitle_finished", task_id=subtitle_summary.task_id, subtitle_count=len(subtitle_summary.subtitle_urls))
+
+            current_stage = "subtitle_downloading"
+            remote_subtitle_url = sign_cos_url(config, subtitle_summary.subtitle_urls[0])
+            generated_subtitle_local_path = download_file(remote_subtitle_url, folder_paths.get_temp_directory(), filename_prefix=f"{filename_prefix}_generated_subtitle")
+            generated_subtitle_text = _read_text_file(generated_subtitle_local_path)
+            subtitle_cue_count = len(_parse_subtitle_cues(generated_subtitle_text))
+            _log_subtitle_burn("subtitle_downloaded", local_path=generated_subtitle_local_path, cue_count=subtitle_cue_count)
+
+            current_stage = "subtitle_writing"
+            local_subtitle_text, local_subtitle_suffix = _build_local_subtitle_text(
+                generated_subtitle_text,
+                subtitle_format,
+                font_name=font_name,
+                font_size=font_size,
+                font_color=font_color,
+                font_alpha=font_alpha,
+                background_alpha=background_alpha,
+                subtitle_position=subtitle_position,
+                target_language=target_language,
+            )
+            local_subtitle_path = _write_text_output(local_subtitle_text, f"{DEFAULT_SUBTITLE_FILENAME_PREFIX}_{filename_prefix}", local_subtitle_suffix)
+
+            burn_ass_text = _build_burn_subtitle_ass_text(
+                generated_subtitle_text,
+                font_name=font_name,
+                font_size=font_size,
+                font_color=font_color,
+                font_alpha=font_alpha,
+                background_alpha=background_alpha,
+                subtitle_position=subtitle_position,
+                target_language=target_language,
+            )
+            burn_ass_local_path = _write_text_output(burn_ass_text, f"{DEFAULT_SUBTITLE_FILENAME_PREFIX}_{filename_prefix}_burn", "ass")
+            _log_subtitle_burn("burn_ass_written", local_path=burn_ass_local_path, cue_count=len(_parse_subtitle_cues(burn_ass_text)))
+
+            current_stage = "burn_subtitle_uploading"
+            burn_subtitle_object = upload_file_to_cos(config, burn_ass_local_path)
+            burn_subtitle_url = sign_cos_url(config, burn_subtitle_object.url)
+            _log_subtitle_burn("burn_ass_uploaded", cos_object=burn_subtitle_object.object_key)
+
+            current_stage = "burn_submitting"
+            burn_submit_summary, _, burn_submit_response = create_burn_subtitle_task(
+                config,
+                input_source,
+                subtitle_url=burn_subtitle_url,
+            )
+            _log_subtitle_burn("burn_submitted", task_id=burn_submit_summary.task_id)
+            current_stage = "burn_waiting"
+            burn_summary, burn_response = wait_for_task(
+                config,
+                burn_submit_summary.task_id,
+                on_progress=lambda summary, elapsed: _log_subtitle_burn(
+                    "burn_status", task_id=summary.task_id, status=summary.status, elapsed_seconds=round(elapsed, 1)
+                ),
+            )
+            if not burn_summary.video_urls:
+                raise RuntimeError(f"Burn subtitle task completed without video URLs: {burn_summary.to_dict()}")
+            _log_subtitle_burn("burn_finished", task_id=burn_summary.task_id, video_count=len(burn_summary.video_urls))
+
+            current_stage = "video_downloading"
+            remote_video_url = sign_cos_url(config, burn_summary.video_urls[0])
+            local_video_path = download_file(remote_video_url, folder_paths.get_output_directory(), filename_prefix=f"{DEFAULT_VIDEO_FILENAME_PREFIX}_{filename_prefix}")
+            try:
+                _register_output_asset(local_video_path)
+            except Exception:
+                pass
+            _log_subtitle_burn("done", subtitle_task_id=subtitle_summary.task_id, burn_task_id=burn_summary.task_id, output_path=local_video_path)
+
+            raw_payload = {
+                "cos_video_object": cos_video_object.to_dict(),
+                "burn_subtitle_object": burn_subtitle_object.to_dict(),
+                "burn_subtitle_url": burn_subtitle_url,
+                "subtitle_submit": subtitle_submit_response,
+                "subtitle_result": subtitle_response,
+                "burn_submit": burn_submit_response,
+                "burn_result": burn_response,
+            }
+
+            return (
+                local_video_path,
+                local_subtitle_path,
+                remote_video_url,
+                remote_subtitle_url,
+                burn_summary.status,
+                json.dumps(raw_payload, ensure_ascii=False, indent=2),
+            )
+        except Exception as exc:
+            _log_subtitle_burn("failed", stage=current_stage, error_type=type(exc).__name__, message=str(exc))
+            raise
 
 
 class TencentPreviewVideoNode:

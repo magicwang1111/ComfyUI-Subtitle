@@ -92,6 +92,23 @@ def _build_cos_authorization(config: TencentCloudConfig, http_method: str, objec
     )
 
 
+def sign_cos_url(config: TencentCloudConfig, resource_url: str, valid_for_seconds: int = 3600) -> str:
+    object_key = urlparse(str(resource_url or "")).path.lstrip("/")
+    if not object_key:
+        raise ValueError("resource_url must include a COS object path.")
+    headers = {
+        "Host": f"{config.cos_bucket}.cos.{config.region}.myqcloud.com",
+    }
+    authorization = _build_cos_authorization(
+        config,
+        "GET",
+        object_key,
+        headers,
+        valid_for_seconds=valid_for_seconds,
+    )
+    return build_cos_url(config.cos_bucket, config.region, object_key) + "?" + authorization
+
+
 def upload_file_to_cos(config: TencentCloudConfig, local_file_path: str, object_key: str | None = None) -> TencentCosObject:
     normalized_path = _normalize_local_file_path(local_file_path)
     resolved_object_key = build_cos_object_key(config, normalized_path, object_key)

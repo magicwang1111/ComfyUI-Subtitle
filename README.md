@@ -1,12 +1,12 @@
 # ComfyUI-Subtitle
 
 当前版本已改为：
-- **优先使用阿里云 OSS 作为输入视频与字幕文件上传链路**
-- **腾讯云 MPS 通过 URL 读取输入**
-- **但智能字幕生成和字幕压制的任务输出，当前实现仍需要腾讯云 COS bucket**
+- **输入视频上传到腾讯云 COS**
+- **腾讯云 MPS 使用 COS 对象作为输入**
+- **智能字幕与字幕压制输出写回腾讯云 COS**
+- **最终字幕文件和压制后视频下载回本地输出目录**
 
-> 原因：你提供的腾讯云媒体处理文档明确支持 `URL` 输入，也明确支持通过 `StdExtInfo` 将部分转码输出写到第三方对象存储（含 OSS）。
-> 但在智能字幕 `SmartSubtitlesTask` 和字幕压制 `ProcessMedia + SubtitleTemplate` 这两条主链路上，文档示例仍然都是 `OutputStorage -> COS`。因此当前实现已改成 **OSS 输入优先**，但 **MPS 输出仍保留 COS 依赖**。
+> 当前采用快速验证方案：代码已移除阿里云 OSS 依赖，统一走腾讯云 COS + MPS。默认地域为 `ap-guangzhou`，默认 Bucket 为 `goumee-1444407842`。
 
 ## 配置方式
 
@@ -26,17 +26,9 @@
 - `tencent_subtitle_definition`
 - `tencent_transcode_definition`
 
-### OSS 输入配置（当前主链路）
-- `area`
-- `oss_endpoint`
-- `oss_access_key_id`
-- `oss_access_key_secret`
-- `oss_bucket`
-- `oss_prefix`
-- `oss_signed_url_expires`
-
-### COS 输出配置（当前仍需要）
+### COS 存储配置
 - `tencent_cos_bucket`
+- `tencent_cos_input_prefix`
 - `tencent_cos_output_prefix`
 - `tencent_cos_burn_output_prefix`
 
@@ -45,14 +37,13 @@
 ### 1. `Tencent Subtitle Burn`
 一个主节点，内部自动完成：
 - 本地视频输入（支持直接上传/选择 `video`，也支持 `file_path`）
-- 上传视频到 OSS
-- 生成 OSS 签名 URL
-- 调用腾讯云 MPS 发起智能字幕任务（URL 输入）
+- 上传视频到腾讯云 COS
+- 调用腾讯云 MPS 发起智能字幕任务（COS 输入）
 - 等待字幕任务完成
 - 下载生成的字幕文件
 - 生成本地字幕文件（`vtt / srt / ass`）
-- 生成用于压制的 ASS 字幕并上传到 OSS
-- 调用腾讯云 MPS 发起字幕压制任务（URL 输入）
+- 生成用于压制的 ASS 字幕并上传到腾讯云 COS
+- 调用腾讯云 MPS 发起字幕压制任务
 - 等待压制任务完成
 - 下载压制后视频到本地
 
@@ -117,21 +108,17 @@ Tencent Subtitle Burn
 ## 当前实现说明
 
 ### 已经实现
-- OSS 输入上传
+- 腾讯云 COS 输入上传
 - 主节点支持 `video` + `file_path`
-- MPS 以 URL 方式读取输入视频和字幕文件
+- 腾讯云 MPS 以 COS 对象读取输入视频
+- 字幕结果与压制结果输出到腾讯云 COS
 - 预览节点保留音频并输出本地可预览视频
 
-### 当前实验模式说明
-- 现在这版已经**硬试接入全 OSS 输出模式**
-- 当未配置 `tencent_cos_bucket` 时，MPS 请求会尝试：
-  - 不传 `OutputStorage`
-  - 改为通过 `StdExtInfo` 注入 OSS 输出信息
-- 这属于**实验模式**，因为你提供的文档明确写到第三方对象存储（含 OSS）可通过 `StdExtInfo` 配置，但没有直接给出 `SmartSubtitlesTask` 和字幕压制主链路的完整 OSS 输出示例
+### 快速验证方案说明
+- 当前版本优先验证纯腾讯云链路是否能顺利跑通
+- 默认使用：
+  - `tencent_region = ap-guangzhou`
+  - `tencent_cos_bucket = goumee-1444407842`
+- 若 COS 对象访问策略限制较严，可能需要你在腾讯云侧放宽测试对象的读取策略，确保 MPS 可读取上传后的字幕对象
 
-### 已确认的文档依据
-- `URL` 输入：有明确示例
-- `StdExtInfo + storage_type = oss`：有明确示例
-- `SmartSubtitlesTask` / `SubtitleTemplate` 输出直接写 OSS：**没有直接示例**
-
-所以这版代码已经按你的要求继续硬试，但是否真正跑通，要以真实接口返回为准。
+所以这版代码当前目标是：先验证 COS 上传 + MPS 字幕生成 + MPS 字幕压制主链路是否跑通，再根据实际返回决定是否补充更严格的私有桶签名方案。
