@@ -14,6 +14,12 @@ app.registerExtension({
                 widget.computeSize = () => [0, -4];
                 widget.type = "hidden";
             }
+            // Existing workflows persist their old node height. Recalculate it
+            // after hiding compatibility-only widgets so no blank area remains.
+            requestAnimationFrame(() => {
+                this.setSize(this.computeSize());
+                this.setDirtyCanvas(true, true);
+            });
             return result;
         };
     },
