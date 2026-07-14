@@ -22,7 +22,7 @@ from .api import (
 NODE_CATEGORY = "Tencent/Subtitle"
 DEFAULT_VIDEO_FILENAME_PREFIX = "tencent/subtitle/video"
 DEFAULT_SUBTITLE_FILENAME_PREFIX = "tencent/subtitle/subtitle"
-DEFAULT_PREVIEW_FILENAME_PREFIX = "tencent/subtitle/preview"
+DEFAULT_PREVIEW_FILENAME_PREFIX = "video/timeline"
 DEFAULT_FILENAME_PREFIX = "tencent_subtitle"
 SUBTITLE_FONTS = ["simkai.ttf", "simhei.ttf", "simsun.ttf", "msyh.ttf", "msyhbd.ttf", "hkjgt.ttf", "dhttx.ttf"]
 TARGET_LANGUAGES = ["auto", "zh", "en", "ja", "ko", "fr", "de", "es", "pt", "ru", "it", "th", "vi", "id", "ms", "ar", "hi"]
@@ -523,12 +523,8 @@ class TencentPreviewVideoNode:
         return {
             "required": {
                 "file_path": ("STRING", {"forceInput": True, "default": ""}),
-            },
-            "optional": {
                 "video_url": ("STRING", {"forceInput": True, "default": ""}),
-                "filename_prefix": ("STRING", {"default": DEFAULT_PREVIEW_FILENAME_PREFIX}),
-                "save_output": ("BOOLEAN", {"default": True}),
-            },
+            }
         }
 
     OUTPUT_NODE = True
