@@ -143,6 +143,11 @@ def load_tencent_cloud_config(overrides: dict[str, Any] | None = None) -> Tencen
         oss_access_key_id=str(_config_or_env_value(merged, "oss_access_key_id", "OSS_ACCESS_KEY_ID", "")).strip(),
         oss_access_key_secret=str(_config_or_env_value(merged, "oss_access_key_secret", "OSS_ACCESS_KEY_SECRET", "")).strip(),
         oss_bucket=str(_config_or_env_value(merged, "oss_bucket", "OSS_BUCKET", "")).strip(),
-        oss_prefix=_normalize_prefix(_config_or_env_value(merged, "oss_prefix", "OSS_PREFIX", "GouMee-subtitle-input-tmp"), "GouMee-subtitle-input-tmp"),
+        oss_prefix=_normalize_prefix(_config_or_env_value(merged, "oss_prefix", "OSS_PREFIX", "GouMee-subtitle/input"), "GouMee-subtitle/input"),
+        oss_output_prefix=_normalize_prefix(_config_or_env_value(merged, "oss_output_prefix", "OSS_OUTPUT_PREFIX", "GouMee-subtitle/subtitle-output"), "GouMee-subtitle/subtitle-output"),
         oss_signed_url_expires=_parse_int(_config_or_env_value(merged, "oss_signed_url_expires", "OSS_SIGNED_URL_EXPIRES", 86400), "oss_signed_url_expires", minimum=1),
+        ffmpeg_path=str(_config_or_env_value(merged, "ffmpeg_path", "FFMPEG_PATH", "")).strip(),
+        ffprobe_path=str(_config_or_env_value(merged, "ffprobe_path", "FFPROBE_PATH", "")).strip(),
+        ffmpeg_encoder=str(_config_or_env_value(merged, "ffmpeg_encoder", "FFMPEG_ENCODER", "auto")).strip() or "auto",
+        ffmpeg_hwaccel=str(_config_or_env_value(merged, "ffmpeg_hwaccel", "FFMPEG_HWACCEL", "")).strip(),
     )

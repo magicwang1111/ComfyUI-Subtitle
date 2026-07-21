@@ -1,10 +1,10 @@
 # ComfyUI-Subtitle
 
 当前版本已改为：
-- **输入视频和压制字幕上传到阿里云 OSS**
+- **输入视频上传到阿里云 OSS**
 - **腾讯云 MPS 使用 OSS 签名 URL 作为输入**
-- **智能字幕与字幕压制输出写回腾讯云 COS**
-- **最终字幕文件和压制后视频下载回本地输出目录**
+- **智能字幕输出写回腾讯云 COS**
+- **本地 FFmpeg 完成字幕压制，保存本地并上传最终 MP4 到 OSS**
 
 > 当前采用 OSS 输入 + 腾讯云 COS 输出的混合链路。默认腾讯云地域为 `ap-guangzhou`，默认 COS Bucket 为 `goumee-1444407842`。
 
@@ -24,21 +24,27 @@
 - `tencent_poll_interval`
 - `tencent_max_wait_seconds`
 - `tencent_subtitle_definition`
-- `tencent_transcode_definition`
 
 ### COS 存储配置
 - `tencent_cos_bucket`
 - `tencent_cos_output_prefix`
-- `tencent_cos_burn_output_prefix`
 
-### OSS 输入配置
+### OSS 输入与最终视频配置
 - `area`
 - `oss_endpoint`
 - `oss_access_key_id`
 - `oss_access_key_secret`
 - `oss_bucket`
-- `oss_prefix`
+- `oss_prefix`：输入视频目录，默认 `GouMee-subtitle/input`
+- `oss_output_prefix`：最终视频目录，默认 `GouMee-subtitle/subtitle-output`
 - `oss_signed_url_expires`
+
+### 本地 FFmpeg
+- `ffmpeg_path`：留空时从系统 `PATH` 查找 `ffmpeg`
+- `ffprobe_path`：留空时从系统 `PATH` 查找 `ffprobe`
+- `ffmpeg_encoder`：默认 `auto`，依次探测 `h264_nvenc / h264_qsv / h264_amf`，最后回退 `libx264`
+- `ffmpeg_hwaccel`：可选硬件解码提示，例如 `cuda`
+- FFmpeg 构建必须包含 `libass` 与 `libx264`
 
 ## 当前提供的前端节点
 
@@ -50,14 +56,15 @@
 - 等待字幕任务完成
 - 下载生成的字幕文件
 - 生成本地字幕文件（`vtt / srt / ass`）
-- 生成用于压制的 ASS 字幕并上传到阿里云 OSS
-- 调用腾讯云 MPS 发起字幕压制任务
-- 等待压制任务完成
-- 下载压制后视频到本地
+- 在本地生成用于压制的 ASS 字幕
+- 调用本地 FFmpeg 压制字幕并保存最终视频
+- 上传最终 MP4 到 OSS，并返回签名 `video_url`
 
 #### 输入
-- `video`
-- `file_path`
+- `local_video`
+- `video_file`（可选）
+- `video_url`（可选）
+- `vhs_video_info`（可选）
 - `subtitle_format`
 - `subtitle_position`
 - `font_name`
@@ -72,9 +79,6 @@
 - `subtitle_language_mode`
 - `auto_wrap`
 - `max_chars_per_line`
-- `filename_prefix`
-- `subtitle_definition_id`
-- `transcode_definition_id`
 
 #### 输出
 - `video_file_path`
@@ -121,11 +125,15 @@ Tencent Subtitle Burn
 ### 已经实现
 - 阿里云 OSS 输入上传
 - 主节点支持 `video` + `file_path`
-- 腾讯云 MPS 以 OSS 签名 URL 读取输入视频和压制字幕
-- 字幕结果与压制结果输出到腾讯云 COS
+- 腾讯云 MPS 以 OSS 签名 URL 读取输入视频
+- 智能字幕结果输出到腾讯云 COS
+- 本地 FFmpeg 使用 ASS 压制并输出最终视频
+- 最终视频上传 OSS，并通过 `video_url` 交给下游预览节点
 - 预览节点保留音频并输出本地可预览视频
 
 ### 存储链路说明
-- 输入视频和压制用 ASS 字幕上传到 OSS，并通过限时签名 URL 交给 MPS
-- 智能字幕文件和压制后视频通过 `OutputStorage` 写入腾讯云 COS
+- 输入视频上传到 OSS，并通过限时签名 URL 交给 MPS
+- 智能字幕文件通过 `OutputStorage` 写入腾讯云 COS
+- 压制用 ASS 保存在本地，不再提交 MPS 压制任务
+- 最终视频保存在本地，并上传至 OSS 的 `GouMee-subtitle/subtitle-output/`
 - `oss_signed_url_expires` 必须覆盖任务排队与处理时间，默认值为 86400 秒

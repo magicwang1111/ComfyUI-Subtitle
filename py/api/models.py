@@ -26,8 +26,13 @@ class TencentCloudConfig:
     oss_access_key_id: str = ""
     oss_access_key_secret: str = ""
     oss_bucket: str = ""
-    oss_prefix: str = "GouMee-subtitle-input-tmp/"
+    oss_prefix: str = "GouMee-subtitle/input/"
+    oss_output_prefix: str = "GouMee-subtitle/subtitle-output/"
     oss_signed_url_expires: int = 86400
+    ffmpeg_path: str = ""
+    ffprobe_path: str = ""
+    ffmpeg_encoder: str = "auto"
+    ffmpeg_hwaccel: str = ""
 
     def has_cos_output(self) -> bool:
         return bool(str(self.cos_bucket).strip())
