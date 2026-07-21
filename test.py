@@ -12,15 +12,14 @@ sys.path.insert(0, REPO_ROOT)
 
 from py.api import (
     TencentInputSource,
-    create_burn_subtitle_task,
     create_smart_subtitle_task,
     download_file,
     load_tencent_cloud_config,
     sign_cos_url,
-    upload_file_to_cos,
+    upload_file_to_oss,
     wait_for_task,
 )
-from py.nodes import _build_burn_subtitle_ass_text, _read_text_file
+from py.nodes import _build_burn_subtitle_ass_text, _burn_subtitle_with_ffmpeg, _read_text_file
 
 
 def emit(payload):
@@ -31,18 +30,19 @@ config = load_tencent_cloud_config()
 emit({
     "stage": "config_loaded",
     "region": config.region,
-    "bucket": config.cos_bucket,
+    "cos_output_bucket": config.cos_bucket,
+    "oss_input_bucket": config.oss_bucket,
 })
 
 temp_dir = tempfile.mkdtemp(prefix="comfyui_subtitle_test_")
 emit({"stage": "temp_dir", "path": temp_dir})
 
-cos_video_object = upload_file_to_cos(config, LOCAL_VIDEO_PATH)
-emit({"stage": "video_uploaded", "object_key": cos_video_object.object_key})
+oss_video_url, oss_video_object_key = upload_file_to_oss(config, LOCAL_VIDEO_PATH)
+emit({"stage": "video_uploaded", "storage": "OSS", "object_key": oss_video_object_key})
 
 input_source = TencentInputSource(
-    source_type="COS",
-    cos_object=cos_video_object,
+    source_type="URL",
+    url=oss_video_url,
     local_file_path=LOCAL_VIDEO_PATH,
 )
 
@@ -92,38 +92,26 @@ emit({
     "chars": len(burn_ass_text),
 })
 
-burn_subtitle_object = upload_file_to_cos(config, burn_ass_local_path)
-emit({"stage": "burn_ass_uploaded", "object_key": burn_subtitle_object.object_key})
-
-burn_subtitle_signed_url = sign_cos_url(config, burn_subtitle_object.url)
-burn_submit_summary, _, _ = create_burn_subtitle_task(
-    config,
-    input_source,
-    subtitle_url=burn_subtitle_signed_url,
+final_video_local_path = os.path.join(temp_dir, "integration_burn_video.mp4")
+ffmpeg_path, ffprobe_path, ffmpeg_encoder = _burn_subtitle_with_ffmpeg(
+    LOCAL_VIDEO_PATH,
+    burn_ass_local_path,
+    final_video_local_path,
+    configured_ffmpeg_path=config.ffmpeg_path,
+    configured_ffprobe_path=config.ffprobe_path,
+    configured_encoder=config.ffmpeg_encoder,
+    configured_hwaccel=config.ffmpeg_hwaccel,
 )
-emit({"stage": "burn_submitted", "task_id": burn_submit_summary.task_id})
-
-burn_summary, _ = wait_for_task(config, burn_submit_summary.task_id, max_wait_seconds=540)
-emit({
-    "stage": "burn_finished",
-    "status": burn_summary.status,
-    "video_url_count": len(burn_summary.video_urls),
-    "subtitle_url_count": len(burn_summary.subtitle_urls),
-})
-
-if not burn_summary.video_urls:
-    raise RuntimeError("Burn task returned no video URLs.")
-
-signed_video_url = sign_cos_url(config, burn_summary.video_urls[0])
-final_video_local_path = download_file(
-    signed_video_url,
-    temp_dir,
-    filename_prefix="integration_burn_video",
-)
+final_video_url, final_video_object_key = upload_file_to_oss(config, final_video_local_path, prefix=config.oss_output_prefix)
 emit({
     "stage": "done",
     "subtitle_task_id": subtitle_submit_summary.task_id,
-    "burn_task_id": burn_submit_summary.task_id,
+    "burn_engine": "local_ffmpeg",
+    "ffmpeg_path": ffmpeg_path,
+    "ffprobe_path": ffprobe_path,
+    "ffmpeg_encoder": ffmpeg_encoder,
+    "final_video_object_key": final_video_object_key,
+    "final_video_url_present": bool(final_video_url),
     "final_video_local_path": final_video_local_path,
     "temp_dir": temp_dir,
 })

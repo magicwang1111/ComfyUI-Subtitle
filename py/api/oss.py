@@ -92,11 +92,11 @@ def _build_oss_signed_download_url(config: TencentCloudConfig, object_key: str) 
     )
 
 
-def upload_file_to_oss(config: TencentCloudConfig, file_path: str, timeout: float | None = None) -> tuple[str, str]:
+def upload_file_to_oss(config: TencentCloudConfig, file_path: str, timeout: float | None = None, prefix: str | None = None) -> tuple[str, str]:
     if not config.has_oss_config():
         raise ValueError("OSS upload config is not configured.")
     normalized_path = _normalize_local_file_path(file_path)
-    object_key = _build_oss_object_key(normalized_path, config.oss_prefix)
+    object_key = _build_oss_object_key(normalized_path, prefix or config.oss_prefix)
     content_type = mimetypes.guess_type(normalized_path)[0] or "application/octet-stream"
     upload_url = _build_oss_url(config, object_key)
     date = email.utils.formatdate(usegmt=True)
