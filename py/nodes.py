@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import textwrap
 import urllib.parse
 from pathlib import Path
 
@@ -26,6 +27,7 @@ DEFAULT_PREVIEW_FILENAME_PREFIX = "video/timeline"
 DEFAULT_FILENAME_PREFIX = "tencent_subtitle"
 SUBTITLE_FONTS = ["simkai.ttf", "simhei.ttf", "simsun.ttf", "msyh.ttf", "msyhbd.ttf", "hkjgt.ttf", "dhttx.ttf"]
 TARGET_LANGUAGES = ["auto", "zh", "en", "ja", "ko", "fr", "de", "es", "pt", "ru", "it", "th", "vi", "id", "ms", "ar", "hi"]
+SUBTITLE_LANGUAGE_MODES = ["auto", "source", "translation", "bilingual"]
 
 
 def _log_subtitle_burn(stage: str, **details) -> None:
@@ -270,7 +272,7 @@ def _position_to_ass_alignment(position: str) -> int:
     return mapping.get(str(position or "bottom").strip().lower(), 2)
 
 
-def _cues_to_ass(cues, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str) -> str:
+def _cues_to_ass(cues, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str, auto_wrap: bool = True) -> str:
     primary_color = _normalize_color_to_ass(font_color, font_alpha)
     alignment = _position_to_ass_alignment(subtitle_position)
     safe_font_name = str(font_name or "SimHei").strip() or "SimHei"
@@ -279,7 +281,7 @@ def _cues_to_ass(cues, *, font_name: str, font_size: int, font_color: str, font_
         "ScriptType: v4.00+",
         "PlayResX: 1920",
         "PlayResY: 1080",
-        "WrapStyle: 2",
+        f"WrapStyle: {0 if auto_wrap else 2}",
         "ScaledBorderAndShadow: yes",
         "",
         "[V4+ Styles]",
@@ -297,13 +299,34 @@ def _cues_to_ass(cues, *, font_name: str, font_size: int, font_color: str, font_
     return "\n".join(lines) + "\n"
 
 
-def _select_subtitle_language(cues, target_language: str):
-    line_index = -1 if str(target_language or "").strip().lower() not in {"", "auto"} else 0
+def _select_subtitle_language(cues, target_language: str, subtitle_language_mode: str = "auto"):
+    mode = str(subtitle_language_mode or "auto").strip().lower()
+    if mode == "bilingual":
+        return cues
+    if mode == "translation":
+        line_index = -1
+    elif mode == "source":
+        line_index = 0
+    else:
+        line_index = -1 if str(target_language or "").strip().lower() not in {"", "auto"} else 0
     return [(start, end, [text_lines[line_index]]) for start, end, text_lines in cues if text_lines]
 
 
-def _build_local_subtitle_text(original_text: str, subtitle_format: str, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str, target_language: str = "") -> tuple[str, str]:
-    cues = _select_subtitle_language(_parse_subtitle_cues(original_text), target_language)
+def _wrap_subtitle_cues(cues, max_chars_per_line: int):
+    width = max(1, int(max_chars_per_line))
+    wrapped_cues = []
+    for start, end, text_lines in cues:
+        wrapped_lines = []
+        for line in text_lines:
+            wrapped_lines.extend(textwrap.wrap(line, width=width, break_long_words=True, break_on_hyphens=False) or [""])
+        wrapped_cues.append((start, end, wrapped_lines))
+    return wrapped_cues
+
+
+def _build_local_subtitle_text(original_text: str, subtitle_format: str, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str, target_language: str = "", subtitle_language_mode: str = "auto", auto_wrap: bool = True, max_chars_per_line: int = 16) -> tuple[str, str]:
+    cues = _select_subtitle_language(_parse_subtitle_cues(original_text), target_language, subtitle_language_mode)
+    if auto_wrap:
+        cues = _wrap_subtitle_cues(cues, max_chars_per_line)
     fmt = str(subtitle_format or "vtt").strip().lower()
     if fmt == "srt":
         return _cues_to_srt(cues), "srt"
@@ -316,12 +339,15 @@ def _build_local_subtitle_text(original_text: str, subtitle_format: str, *, font
             font_alpha=font_alpha,
             background_alpha=background_alpha,
             subtitle_position=subtitle_position,
+            auto_wrap=auto_wrap,
         ), "ass"
     return _cues_to_vtt(cues), "vtt"
 
 
-def _build_burn_subtitle_ass_text(original_text: str, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str, target_language: str = "") -> str:
-    cues = _select_subtitle_language(_parse_subtitle_cues(original_text), target_language)
+def _build_burn_subtitle_ass_text(original_text: str, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str, target_language: str = "", subtitle_language_mode: str = "auto", auto_wrap: bool = True, max_chars_per_line: int = 16) -> str:
+    cues = _select_subtitle_language(_parse_subtitle_cues(original_text), target_language, subtitle_language_mode)
+    if auto_wrap:
+        cues = _wrap_subtitle_cues(cues, max_chars_per_line)
     return _cues_to_ass(
         cues,
         font_name=font_name,
@@ -330,6 +356,7 @@ def _build_burn_subtitle_ass_text(original_text: str, *, font_name: str, font_si
         font_alpha=font_alpha,
         background_alpha=background_alpha,
         subtitle_position=subtitle_position,
+        auto_wrap=auto_wrap,
     )
 
 
@@ -350,6 +377,9 @@ class TencentSubtitleBurnNode:
                 "need_wordlist": ("BOOLEAN", {"default": False}),
                 "adapt_words": ("STRING", {"default": "", "multiline": True}),
                 "target_language": (TARGET_LANGUAGES, {"default": "auto", "tooltip": "auto outputs the recognized source language; another value outputs only that translation."}),
+                "subtitle_language_mode": (SUBTITLE_LANGUAGE_MODES, {"default": "auto", "tooltip": "auto preserves the existing target-language behavior; source keeps original text; translation keeps translated text; bilingual keeps both lines."}),
+                "auto_wrap": ("BOOLEAN", {"default": True, "tooltip": "Automatically wrap long subtitles to fit the video width."}),
+                "max_chars_per_line": ("INT", {"default": 16, "min": 4, "max": 80, "step": 1, "tooltip": "When auto_wrap is enabled, insert a line break after this many characters."}),
             },
             "optional": {
                 "video_file": ("STRING", {"forceInput": True}),
@@ -381,6 +411,9 @@ class TencentSubtitleBurnNode:
         need_wordlist,
         adapt_words,
         target_language,
+        subtitle_language_mode="auto",
+        auto_wrap=True,
+        max_chars_per_line=16,
         video_file="",
         video_url="",
         vhs_video_info=None,
@@ -445,6 +478,9 @@ class TencentSubtitleBurnNode:
                 background_alpha=background_alpha,
                 subtitle_position=subtitle_position,
                 target_language=target_language,
+                subtitle_language_mode=subtitle_language_mode,
+                auto_wrap=auto_wrap,
+                max_chars_per_line=max_chars_per_line,
             )
             local_subtitle_path = _write_text_output(local_subtitle_text, f"{DEFAULT_SUBTITLE_FILENAME_PREFIX}_{filename_prefix}", local_subtitle_suffix)
 
@@ -457,6 +493,9 @@ class TencentSubtitleBurnNode:
                 background_alpha=background_alpha,
                 subtitle_position=subtitle_position,
                 target_language=target_language,
+                subtitle_language_mode=subtitle_language_mode,
+                auto_wrap=auto_wrap,
+                max_chars_per_line=max_chars_per_line,
             )
             burn_ass_local_path = _write_text_output(burn_ass_text, f"{DEFAULT_SUBTITLE_FILENAME_PREFIX}_{filename_prefix}_burn", "ass")
             _log_subtitle_burn("burn_ass_written", local_path=burn_ass_local_path, cue_count=len(_parse_subtitle_cues(burn_ass_text)))

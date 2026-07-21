@@ -61,6 +61,9 @@
 - `need_wordlist`
 - `adapt_words`
 - `target_language`
+- `subtitle_language_mode`
+- `auto_wrap`
+- `max_chars_per_line`
 - `filename_prefix`
 - `subtitle_definition_id`
 - `transcode_definition_id`

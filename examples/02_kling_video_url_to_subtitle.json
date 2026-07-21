@@ -40,7 +40,7 @@
         {"name": "raw_json", "type": "STRING", "links": null, "slot_index": 5}
       ],
       "properties": {"Node name for S&R": "Tencent Subtitle Burn"},
-      "widgets_values": ["", "srt", "bottom", "simkai.ttf", 24, "#FFFFFF", 0.9, 0.2, false, false, "", "auto"]
+      "widgets_values": ["", "srt", "bottom", "simkai.ttf", 24, "#FFFFFF", 0.9, 0.2, false, false, "", "auto", "auto", true, 16]
     }
   ],
   "links": [[1, 1, 0, 2, 1, "STRING"]],
