@@ -16,7 +16,7 @@ from .api import (
     download_file,
     load_tencent_cloud_config,
     sign_cos_url,
-    upload_file_to_cos,
+    upload_file_to_oss,
     wait_for_task,
 )
 
@@ -424,7 +424,7 @@ class TencentSubtitleBurnNode:
         try:
             config = load_tencent_cloud_config()
             filename_prefix = DEFAULT_FILENAME_PREFIX
-            _log_subtitle_burn("config_loaded", region=config.region, cos_bucket=config.cos_bucket, target_language=target_language or "auto")
+            _log_subtitle_burn("config_loaded", region=config.region, cos_bucket=config.cos_bucket, oss_bucket=config.oss_bucket, target_language=target_language or "auto")
 
             current_stage = "input_resolving"
             local_video_input = _resolve_video_input(local_video, video_file, video_url, vhs_video_info, prompt, unique_id)
@@ -432,11 +432,13 @@ class TencentSubtitleBurnNode:
 
             if not config.has_cos_output():
                 raise ValueError("Current subtitle node requires Tencent COS output. Please complete tencent_cos_bucket in config.local.json.")
+            if not config.has_oss_config():
+                raise ValueError("Current subtitle node requires OSS input. Please complete oss_* fields in config.local.json.")
 
             current_stage = "video_uploading"
-            cos_video_object = upload_file_to_cos(config, local_video_input)
-            _log_subtitle_burn("video_uploaded", cos_object=cos_video_object.object_key)
-            input_source = TencentInputSource(source_type="COS", cos_object=cos_video_object, local_file_path=local_video_input)
+            oss_video_url, oss_video_object_key = upload_file_to_oss(config, local_video_input)
+            _log_subtitle_burn("video_uploaded", storage="OSS", object_key=oss_video_object_key)
+            input_source = TencentInputSource(source_type="URL", url=oss_video_url, local_file_path=local_video_input)
 
             current_stage = "subtitle_submitting"
             subtitle_submit_summary, _, subtitle_submit_response = create_smart_subtitle_task(
@@ -501,9 +503,8 @@ class TencentSubtitleBurnNode:
             _log_subtitle_burn("burn_ass_written", local_path=burn_ass_local_path, cue_count=len(_parse_subtitle_cues(burn_ass_text)))
 
             current_stage = "burn_subtitle_uploading"
-            burn_subtitle_object = upload_file_to_cos(config, burn_ass_local_path)
-            burn_subtitle_url = sign_cos_url(config, burn_subtitle_object.url)
-            _log_subtitle_burn("burn_ass_uploaded", cos_object=burn_subtitle_object.object_key)
+            burn_subtitle_url, burn_subtitle_object_key = upload_file_to_oss(config, burn_ass_local_path)
+            _log_subtitle_burn("burn_ass_uploaded", storage="OSS", object_key=burn_subtitle_object_key)
 
             current_stage = "burn_submitting"
             burn_submit_summary, _, burn_submit_response = create_burn_subtitle_task(
@@ -534,9 +535,8 @@ class TencentSubtitleBurnNode:
             _log_subtitle_burn("done", subtitle_task_id=subtitle_summary.task_id, burn_task_id=burn_summary.task_id, output_path=local_video_path)
 
             raw_payload = {
-                "cos_video_object": cos_video_object.to_dict(),
-                "burn_subtitle_object": burn_subtitle_object.to_dict(),
-                "burn_subtitle_url": burn_subtitle_url,
+                "oss_video_object_key": oss_video_object_key,
+                "burn_subtitle_object_key": burn_subtitle_object_key,
                 "subtitle_submit": subtitle_submit_response,
                 "subtitle_result": subtitle_response,
                 "burn_submit": burn_submit_response,

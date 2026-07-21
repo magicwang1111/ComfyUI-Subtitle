@@ -91,6 +91,19 @@ def _normalize_prefix(value: Any, default: str) -> str:
     return normalized + "/"
 
 
+def _validate_oss_group(merged: dict[str, Any]) -> None:
+    oss_fields = {
+        "oss_endpoint": str(_config_or_env_value(merged, "oss_endpoint", "OSS_ENDPOINT", "")).strip(),
+        "oss_access_key_id": str(_config_or_env_value(merged, "oss_access_key_id", "OSS_ACCESS_KEY_ID", "")).strip(),
+        "oss_access_key_secret": str(_config_or_env_value(merged, "oss_access_key_secret", "OSS_ACCESS_KEY_SECRET", "")).strip(),
+        "oss_bucket": str(_config_or_env_value(merged, "oss_bucket", "OSS_BUCKET", "")).strip(),
+    }
+    present = [key for key, value in oss_fields.items() if value]
+    missing = [key for key, value in oss_fields.items() if not value]
+    if present and missing:
+        raise ValueError("OSS upload config is incomplete; set " + ", ".join(missing) + ".")
+
+
 def load_tencent_cloud_config(overrides: dict[str, Any] | None = None) -> TencentCloudConfig:
     config_data = _load_json_config()
     overrides = overrides or {}
@@ -103,6 +116,8 @@ def load_tencent_cloud_config(overrides: dict[str, Any] | None = None) -> Tencen
         raise ValueError("Tencent secret id is required. Add tencent_secret_id to config.local.json or set TENCENTCLOUD_SECRET_ID.")
     if not secret_key:
         raise ValueError("Tencent secret key is required. Add tencent_secret_key to config.local.json or set TENCENTCLOUD_SECRET_KEY.")
+
+    _validate_oss_group(merged)
 
     cos_bucket = str(_config_or_env_value(merged, "tencent_cos_bucket", "TENCENT_COS_BUCKET", DEFAULT_COS_BUCKET)).strip()
     if not cos_bucket:
@@ -123,4 +138,11 @@ def load_tencent_cloud_config(overrides: dict[str, Any] | None = None) -> Tencen
         cos_burn_output_prefix=_normalize_prefix(_config_or_env_value(merged, "tencent_cos_burn_output_prefix", "TENCENT_COS_BURN_OUTPUT_PREFIX", "subtitle-burn-output/"), "subtitle-burn-output/"),
         subtitle_definition=_parse_int(_config_or_env_value(merged, "tencent_subtitle_definition", "TENCENT_SUBTITLE_DEFINITION", 122), "tencent_subtitle_definition", minimum=1),
         transcode_definition=_parse_int(_config_or_env_value(merged, "tencent_transcode_definition", "TENCENT_TRANSCODE_DEFINITION", 101005), "tencent_transcode_definition", minimum=1),
+        area=str(_config_or_env_value(merged, "area", "AREA", "china")).strip(),
+        oss_endpoint=str(_config_or_env_value(merged, "oss_endpoint", "OSS_ENDPOINT", "")).strip(),
+        oss_access_key_id=str(_config_or_env_value(merged, "oss_access_key_id", "OSS_ACCESS_KEY_ID", "")).strip(),
+        oss_access_key_secret=str(_config_or_env_value(merged, "oss_access_key_secret", "OSS_ACCESS_KEY_SECRET", "")).strip(),
+        oss_bucket=str(_config_or_env_value(merged, "oss_bucket", "OSS_BUCKET", "")).strip(),
+        oss_prefix=_normalize_prefix(_config_or_env_value(merged, "oss_prefix", "OSS_PREFIX", "GouMee-subtitle-input-tmp"), "GouMee-subtitle-input-tmp"),
+        oss_signed_url_expires=_parse_int(_config_or_env_value(merged, "oss_signed_url_expires", "OSS_SIGNED_URL_EXPIRES", 86400), "oss_signed_url_expires", minimum=1),
     )

@@ -12,5 +12,12 @@
   "tencent_cos_output_prefix": "subtitle-output/",
   "tencent_cos_burn_output_prefix": "subtitle-burn-output/",
   "tencent_subtitle_definition": 122,
-  "tencent_transcode_definition": 101005
+  "tencent_transcode_definition": 101005,
+  "area": "china",
+  "oss_endpoint": "oss-cn-hangzhou.aliyuncs.com",
+  "oss_access_key_id": "demo-oss-access-key-id",
+  "oss_access_key_secret": "demo-oss-access-key-secret",
+  "oss_bucket": "example-bucket",
+  "oss_prefix": "GouMee-subtitle-input-tmp",
+  "oss_signed_url_expires": 86400
 }

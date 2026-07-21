@@ -17,7 +17,7 @@ from py.api import (
     download_file,
     load_tencent_cloud_config,
     sign_cos_url,
-    upload_file_to_cos,
+    upload_file_to_oss,
     wait_for_task,
 )
 from py.nodes import _build_burn_subtitle_ass_text, _read_text_file
@@ -31,18 +31,19 @@ config = load_tencent_cloud_config()
 emit({
     "stage": "config_loaded",
     "region": config.region,
-    "bucket": config.cos_bucket,
+    "cos_output_bucket": config.cos_bucket,
+    "oss_input_bucket": config.oss_bucket,
 })
 
 temp_dir = tempfile.mkdtemp(prefix="comfyui_subtitle_test_")
 emit({"stage": "temp_dir", "path": temp_dir})
 
-cos_video_object = upload_file_to_cos(config, LOCAL_VIDEO_PATH)
-emit({"stage": "video_uploaded", "object_key": cos_video_object.object_key})
+oss_video_url, oss_video_object_key = upload_file_to_oss(config, LOCAL_VIDEO_PATH)
+emit({"stage": "video_uploaded", "storage": "OSS", "object_key": oss_video_object_key})
 
 input_source = TencentInputSource(
-    source_type="COS",
-    cos_object=cos_video_object,
+    source_type="URL",
+    url=oss_video_url,
     local_file_path=LOCAL_VIDEO_PATH,
 )
 
@@ -92,10 +93,8 @@ emit({
     "chars": len(burn_ass_text),
 })
 
-burn_subtitle_object = upload_file_to_cos(config, burn_ass_local_path)
-emit({"stage": "burn_ass_uploaded", "object_key": burn_subtitle_object.object_key})
-
-burn_subtitle_signed_url = sign_cos_url(config, burn_subtitle_object.url)
+burn_subtitle_signed_url, burn_subtitle_object_key = upload_file_to_oss(config, burn_ass_local_path)
+emit({"stage": "burn_ass_uploaded", "storage": "OSS", "object_key": burn_subtitle_object_key})
 burn_submit_summary, _, _ = create_burn_subtitle_task(
     config,
     input_source,

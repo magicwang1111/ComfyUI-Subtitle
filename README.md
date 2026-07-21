@@ -1,12 +1,12 @@
 # ComfyUI-Subtitle
 
 当前版本已改为：
-- **输入视频上传到腾讯云 COS**
-- **腾讯云 MPS 使用 COS 对象作为输入**
+- **输入视频和压制字幕上传到阿里云 OSS**
+- **腾讯云 MPS 使用 OSS 签名 URL 作为输入**
 - **智能字幕与字幕压制输出写回腾讯云 COS**
 - **最终字幕文件和压制后视频下载回本地输出目录**
 
-> 当前采用快速验证方案：代码已移除阿里云 OSS 依赖，统一走腾讯云 COS + MPS。默认地域为 `ap-guangzhou`，默认 Bucket 为 `goumee-1444407842`。
+> 当前采用 OSS 输入 + 腾讯云 COS 输出的混合链路。默认腾讯云地域为 `ap-guangzhou`，默认 COS Bucket 为 `goumee-1444407842`。
 
 ## 配置方式
 
@@ -28,21 +28,29 @@
 
 ### COS 存储配置
 - `tencent_cos_bucket`
-- `tencent_cos_input_prefix`
 - `tencent_cos_output_prefix`
 - `tencent_cos_burn_output_prefix`
+
+### OSS 输入配置
+- `area`
+- `oss_endpoint`
+- `oss_access_key_id`
+- `oss_access_key_secret`
+- `oss_bucket`
+- `oss_prefix`
+- `oss_signed_url_expires`
 
 ## 当前提供的前端节点
 
 ### 1. `Tencent Subtitle Burn`
 一个主节点，内部自动完成：
 - 本地视频输入（支持直接上传/选择 `video`，也支持 `file_path`）
-- 上传视频到腾讯云 COS
-- 调用腾讯云 MPS 发起智能字幕任务（COS 输入）
+- 上传视频到阿里云 OSS
+- 调用腾讯云 MPS 发起智能字幕任务（URL 输入）
 - 等待字幕任务完成
 - 下载生成的字幕文件
 - 生成本地字幕文件（`vtt / srt / ass`）
-- 生成用于压制的 ASS 字幕并上传到腾讯云 COS
+- 生成用于压制的 ASS 字幕并上传到阿里云 OSS
 - 调用腾讯云 MPS 发起字幕压制任务
 - 等待压制任务完成
 - 下载压制后视频到本地
@@ -111,17 +119,13 @@ Tencent Subtitle Burn
 ## 当前实现说明
 
 ### 已经实现
-- 腾讯云 COS 输入上传
+- 阿里云 OSS 输入上传
 - 主节点支持 `video` + `file_path`
-- 腾讯云 MPS 以 COS 对象读取输入视频
+- 腾讯云 MPS 以 OSS 签名 URL 读取输入视频和压制字幕
 - 字幕结果与压制结果输出到腾讯云 COS
 - 预览节点保留音频并输出本地可预览视频
 
-### 快速验证方案说明
-- 当前版本优先验证纯腾讯云链路是否能顺利跑通
-- 默认使用：
-  - `tencent_region = ap-guangzhou`
-  - `tencent_cos_bucket = goumee-1444407842`
-- 若 COS 对象访问策略限制较严，可能需要你在腾讯云侧放宽测试对象的读取策略，确保 MPS 可读取上传后的字幕对象
-
-所以这版代码当前目标是：先验证 COS 上传 + MPS 字幕生成 + MPS 字幕压制主链路是否跑通，再根据实际返回决定是否补充更严格的私有桶签名方案。
+### 存储链路说明
+- 输入视频和压制用 ASS 字幕上传到 OSS，并通过限时签名 URL 交给 MPS
+- 智能字幕文件和压制后视频通过 `OutputStorage` 写入腾讯云 COS
+- `oss_signed_url_expires` 必须覆盖任务排队与处理时间，默认值为 86400 秒
