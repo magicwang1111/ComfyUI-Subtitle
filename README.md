@@ -81,6 +81,7 @@
 - `max_chars_per_line`
 - `margin_v`
 - `strip_punctuation`
+- `max_chars_per_cue`
 
 #### 输出
 - `video_file_path`

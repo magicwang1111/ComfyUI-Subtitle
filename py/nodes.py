@@ -459,25 +459,102 @@ def _wrap_subtitle_cues(cues, max_chars_per_line: int):
     return wrapped_cues
 
 
+def _strip_punctuation_text(text: str) -> str:
+    return "".join(
+        char
+        for index, char in enumerate(text)
+        if char in {"%", "％"}
+        or not unicodedata.category(char).startswith("P")
+        or (char in {".", "．"} and index > 0 and index + 1 < len(text) and text[index - 1].isdigit() and text[index + 1].isdigit())
+    )
+
+
 def _strip_punctuation_from_cues(cues):
     cleaned_cues = []
     for start, end, text_lines in cues:
         cleaned_lines = []
         for line in text_lines:
-            cleaned = "".join(
-                char
-                for index, char in enumerate(line)
-                if char in {"%", "％"}
-                or not unicodedata.category(char).startswith("P")
-                or (char in {".", "．"} and index > 0 and index + 1 < len(line) and line[index - 1].isdigit() and line[index + 1].isdigit())
-            )
-            cleaned_lines.append(cleaned)
+            cleaned_lines.append(_strip_punctuation_text(line))
         cleaned_cues.append((start, end, cleaned_lines))
     return cleaned_cues
 
 
-def _prepare_subtitle_cues(original_text: str, *, target_language: str, subtitle_language_mode: str, strip_punctuation: bool, auto_wrap: bool, max_chars_per_line: int):
-    cues = _select_subtitle_language(_parse_subtitle_cues(original_text), target_language, subtitle_language_mode)
+def _uses_source_subtitle(target_language: str, subtitle_language_mode: str) -> bool:
+    mode = str(subtitle_language_mode or "auto").strip().lower()
+    return mode == "source" or (mode == "auto" and str(target_language or "").strip().lower() in {"", "auto"})
+
+
+def _extract_word_timed_cues(response: dict, max_chars_per_cue: int, strip_punctuation: bool):
+    workflow_task = response.get("WorkflowTask")
+    if not isinstance(workflow_task, dict):
+        return []
+
+    selected_segments = None
+    for subtitle_task in workflow_task.get("SmartSubtitlesTaskResult") or []:
+        if not isinstance(subtitle_task, dict):
+            continue
+        for task_name in ("AsrFullTextTask", "TransTextTask", "PureSubtitleTransTask", "OcrFullTextTask"):
+            task = subtitle_task.get(task_name)
+            output = task.get("Output") if isinstance(task, dict) else None
+            segments = output.get("SegmentSet") if isinstance(output, dict) else None
+            if isinstance(segments, list) and any(isinstance(segment, dict) and segment.get("Wordlist") for segment in segments):
+                selected_segments = segments
+                break
+        if selected_segments is not None:
+            break
+
+    if selected_segments is None:
+        return []
+
+    width = max(1, int(max_chars_per_cue))
+    cues = []
+    for segment in selected_segments:
+        wordlist = segment.get("Wordlist") if isinstance(segment, dict) else None
+        if not isinstance(wordlist, list) or not wordlist:
+            continue
+
+        timed_chars = []
+        for word_item in wordlist:
+            if not isinstance(word_item, dict):
+                continue
+            word = str(word_item.get("Word") or "")
+            if strip_punctuation:
+                word = _strip_punctuation_text(word)
+            if not word:
+                continue
+            try:
+                start = float(word_item["Start"])
+                end = float(word_item["End"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            duration = max(0.0, end - start)
+            for index, char in enumerate(word):
+                char_start = start + duration * index / len(word)
+                char_end = start + duration * (index + 1) / len(word)
+                timed_chars.append((char, char_start, char_end))
+
+        if not strip_punctuation and timed_chars:
+            restored_chars = []
+            word_index = 0
+            for char in str(segment.get("Text") or ""):
+                if word_index < len(timed_chars) and char == timed_chars[word_index][0]:
+                    restored_chars.append(timed_chars[word_index])
+                    word_index += 1
+                elif char.isspace() or unicodedata.category(char).startswith("P"):
+                    anchor = restored_chars[-1][2] if restored_chars else timed_chars[0][1]
+                    restored_chars.append((char, anchor, anchor))
+            restored_chars.extend(timed_chars[word_index:])
+            timed_chars = restored_chars
+
+        for index in range(0, len(timed_chars), width):
+            chunk = timed_chars[index:index + width]
+            if chunk:
+                cues.append((chunk[0][1], chunk[-1][2], ["".join(item[0] for item in chunk)]))
+    return cues
+
+
+def _prepare_subtitle_cues(original_text: str, *, target_language: str, subtitle_language_mode: str, strip_punctuation: bool, auto_wrap: bool, max_chars_per_line: int, word_timed_cues=None):
+    cues = word_timed_cues or _select_subtitle_language(_parse_subtitle_cues(original_text), target_language, subtitle_language_mode)
     if strip_punctuation:
         cues = _strip_punctuation_from_cues(cues)
     if auto_wrap:
@@ -485,7 +562,7 @@ def _prepare_subtitle_cues(original_text: str, *, target_language: str, subtitle
     return cues
 
 
-def _build_local_subtitle_text(original_text: str, subtitle_format: str, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str, margin_v: int = 120, target_language: str = "", subtitle_language_mode: str = "auto", strip_punctuation: bool = True, auto_wrap: bool = True, max_chars_per_line: int = 16) -> tuple[str, str]:
+def _build_local_subtitle_text(original_text: str, subtitle_format: str, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str, margin_v: int = 120, target_language: str = "", subtitle_language_mode: str = "auto", strip_punctuation: bool = True, auto_wrap: bool = True, max_chars_per_line: int = 16, word_timed_cues=None) -> tuple[str, str]:
     cues = _prepare_subtitle_cues(
         original_text,
         target_language=target_language,
@@ -493,6 +570,7 @@ def _build_local_subtitle_text(original_text: str, subtitle_format: str, *, font
         strip_punctuation=strip_punctuation,
         auto_wrap=auto_wrap,
         max_chars_per_line=max_chars_per_line,
+        word_timed_cues=word_timed_cues,
     )
     fmt = str(subtitle_format or "vtt").strip().lower()
     if fmt == "srt":
@@ -512,7 +590,7 @@ def _build_local_subtitle_text(original_text: str, subtitle_format: str, *, font
     return _cues_to_vtt(cues), "vtt"
 
 
-def _build_burn_subtitle_ass_text(original_text: str, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str, margin_v: int = 120, target_language: str = "", subtitle_language_mode: str = "auto", strip_punctuation: bool = True, auto_wrap: bool = True, max_chars_per_line: int = 16) -> str:
+def _build_burn_subtitle_ass_text(original_text: str, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str, margin_v: int = 120, target_language: str = "", subtitle_language_mode: str = "auto", strip_punctuation: bool = True, auto_wrap: bool = True, max_chars_per_line: int = 16, word_timed_cues=None) -> str:
     cues = _prepare_subtitle_cues(
         original_text,
         target_language=target_language,
@@ -520,6 +598,7 @@ def _build_burn_subtitle_ass_text(original_text: str, *, font_name: str, font_si
         strip_punctuation=strip_punctuation,
         auto_wrap=auto_wrap,
         max_chars_per_line=max_chars_per_line,
+        word_timed_cues=word_timed_cues,
     )
     return _cues_to_ass(
         cues,
@@ -548,7 +627,7 @@ class TencentSubtitleBurnNode:
                 "font_alpha": ("FLOAT", {"default": 0.9, "min": 0.0, "max": 1.0, "step": 0.05}),
                 "background_alpha": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 1.0, "step": 0.05}),
                 "accurate_mode": ("BOOLEAN", {"default": False}),
-                "need_wordlist": ("BOOLEAN", {"default": False}),
+                "need_wordlist": ("BOOLEAN", {"default": True}),
                 "adapt_words": ("STRING", {"default": "", "multiline": True}),
                 "target_language": (TARGET_LANGUAGES, {"default": "auto", "tooltip": "auto outputs the recognized source language; another value outputs only that translation."}),
                 "subtitle_language_mode": (SUBTITLE_LANGUAGE_MODES, {"default": "auto", "tooltip": "auto preserves the existing target-language behavior; source keeps original text; translation keeps translated text; bilingual keeps both lines."}),
@@ -556,6 +635,7 @@ class TencentSubtitleBurnNode:
                 "max_chars_per_line": ("INT", {"default": 16, "min": 4, "max": 80, "step": 1, "tooltip": "When auto_wrap is enabled, insert a line break after this many characters."}),
                 "margin_v": ("INT", {"default": 120, "min": 0, "max": 1080, "step": 1, "tooltip": "Vertical margin in pixels. For bottom subtitles, a larger value moves the subtitles upward."}),
                 "strip_punctuation": ("BOOLEAN", {"default": True, "tooltip": "Remove punctuation before automatic line wrapping, while preserving decimal points and percent signs."}),
+                "max_chars_per_cue": ("INT", {"default": 8, "min": 1, "max": 80, "step": 1, "tooltip": "Use Tencent word timestamps to show at most this many characters in each subtitle cue."}),
             },
             "optional": {
                 "video_file": ("STRING", {"forceInput": True}),
@@ -592,6 +672,7 @@ class TencentSubtitleBurnNode:
         max_chars_per_line=16,
         margin_v=120,
         strip_punctuation=True,
+        max_chars_per_cue=8,
         video_file="",
         video_url="",
         vhs_video_info=None,
@@ -601,6 +682,7 @@ class TencentSubtitleBurnNode:
         current_stage = "config_loading"
         try:
             config = load_tencent_cloud_config()
+            need_wordlist = True
             filename_prefix = DEFAULT_FILENAME_PREFIX
             _log_subtitle_burn("config_loaded", region=config.region, cos_bucket=config.cos_bucket, oss_bucket=config.oss_bucket, target_language=target_language or "auto")
 
@@ -647,6 +729,15 @@ class TencentSubtitleBurnNode:
             subtitle_cue_count = len(_parse_subtitle_cues(generated_subtitle_text))
             _log_subtitle_burn("subtitle_downloaded", local_path=generated_subtitle_local_path, cue_count=subtitle_cue_count)
 
+            word_timed_cues = []
+            if _uses_source_subtitle(target_language, subtitle_language_mode):
+                word_timed_cues = _extract_word_timed_cues(subtitle_response, max_chars_per_cue, strip_punctuation)
+            _log_subtitle_burn(
+                "word_timed_cues_ready" if word_timed_cues else "word_timed_cues_unavailable",
+                cue_count=len(word_timed_cues),
+                max_chars_per_cue=max_chars_per_cue,
+            )
+
             current_stage = "subtitle_writing"
             local_subtitle_text, local_subtitle_suffix = _build_local_subtitle_text(
                 generated_subtitle_text,
@@ -663,6 +754,7 @@ class TencentSubtitleBurnNode:
                 strip_punctuation=strip_punctuation,
                 auto_wrap=auto_wrap,
                 max_chars_per_line=max_chars_per_line,
+                word_timed_cues=word_timed_cues,
             )
             local_subtitle_path = _write_text_output(local_subtitle_text, f"{DEFAULT_SUBTITLE_FILENAME_PREFIX}_{filename_prefix}", local_subtitle_suffix)
 
@@ -680,6 +772,7 @@ class TencentSubtitleBurnNode:
                 strip_punctuation=strip_punctuation,
                 auto_wrap=auto_wrap,
                 max_chars_per_line=max_chars_per_line,
+                word_timed_cues=word_timed_cues,
             )
             burn_ass_local_path = _write_text_output(burn_ass_text, f"{DEFAULT_SUBTITLE_FILENAME_PREFIX}_{filename_prefix}_burn", "ass")
             _log_subtitle_burn("burn_ass_written", local_path=burn_ass_local_path, cue_count=subtitle_cue_count)
