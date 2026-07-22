@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import textwrap
+import unicodedata
 import urllib.parse
 from pathlib import Path
 
@@ -407,7 +408,7 @@ def _position_to_ass_alignment(position: str) -> int:
     return mapping.get(str(position or "bottom").strip().lower(), 2)
 
 
-def _cues_to_ass(cues, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str, auto_wrap: bool = True) -> str:
+def _cues_to_ass(cues, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str, margin_v: int = 120, auto_wrap: bool = True) -> str:
     primary_color = _normalize_color_to_ass(font_color, font_alpha)
     alignment = _position_to_ass_alignment(subtitle_position)
     safe_font_name = str(font_name or "SimHei").strip() or "SimHei"
@@ -423,7 +424,7 @@ def _cues_to_ass(cues, *, font_name: str, font_size: int, font_color: str, font_
         "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding",
         # BorderStyle 1 renders a black outline around the glyphs.  The former
         # BorderStyle 3 rendered BackColour as a rectangular black subtitle box.
-        f"Style: Default,{safe_font_name},{int(font_size)},{primary_color},&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,{alignment},40,40,40,1",
+        f"Style: Default,{safe_font_name},{int(font_size)},{primary_color},&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,{alignment},40,40,{max(0, int(margin_v))},1",
         "",
         "[Events]",
         "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text",
@@ -458,10 +459,41 @@ def _wrap_subtitle_cues(cues, max_chars_per_line: int):
     return wrapped_cues
 
 
-def _build_local_subtitle_text(original_text: str, subtitle_format: str, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str, target_language: str = "", subtitle_language_mode: str = "auto", auto_wrap: bool = True, max_chars_per_line: int = 16) -> tuple[str, str]:
+def _strip_punctuation_from_cues(cues):
+    cleaned_cues = []
+    for start, end, text_lines in cues:
+        cleaned_lines = []
+        for line in text_lines:
+            cleaned = "".join(
+                char
+                for index, char in enumerate(line)
+                if char in {"%", "％"}
+                or not unicodedata.category(char).startswith("P")
+                or (char in {".", "．"} and index > 0 and index + 1 < len(line) and line[index - 1].isdigit() and line[index + 1].isdigit())
+            )
+            cleaned_lines.append(cleaned)
+        cleaned_cues.append((start, end, cleaned_lines))
+    return cleaned_cues
+
+
+def _prepare_subtitle_cues(original_text: str, *, target_language: str, subtitle_language_mode: str, strip_punctuation: bool, auto_wrap: bool, max_chars_per_line: int):
     cues = _select_subtitle_language(_parse_subtitle_cues(original_text), target_language, subtitle_language_mode)
+    if strip_punctuation:
+        cues = _strip_punctuation_from_cues(cues)
     if auto_wrap:
         cues = _wrap_subtitle_cues(cues, max_chars_per_line)
+    return cues
+
+
+def _build_local_subtitle_text(original_text: str, subtitle_format: str, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str, margin_v: int = 120, target_language: str = "", subtitle_language_mode: str = "auto", strip_punctuation: bool = True, auto_wrap: bool = True, max_chars_per_line: int = 16) -> tuple[str, str]:
+    cues = _prepare_subtitle_cues(
+        original_text,
+        target_language=target_language,
+        subtitle_language_mode=subtitle_language_mode,
+        strip_punctuation=strip_punctuation,
+        auto_wrap=auto_wrap,
+        max_chars_per_line=max_chars_per_line,
+    )
     fmt = str(subtitle_format or "vtt").strip().lower()
     if fmt == "srt":
         return _cues_to_srt(cues), "srt"
@@ -474,15 +506,21 @@ def _build_local_subtitle_text(original_text: str, subtitle_format: str, *, font
             font_alpha=font_alpha,
             background_alpha=background_alpha,
             subtitle_position=subtitle_position,
+            margin_v=margin_v,
             auto_wrap=auto_wrap,
         ), "ass"
     return _cues_to_vtt(cues), "vtt"
 
 
-def _build_burn_subtitle_ass_text(original_text: str, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str, target_language: str = "", subtitle_language_mode: str = "auto", auto_wrap: bool = True, max_chars_per_line: int = 16) -> str:
-    cues = _select_subtitle_language(_parse_subtitle_cues(original_text), target_language, subtitle_language_mode)
-    if auto_wrap:
-        cues = _wrap_subtitle_cues(cues, max_chars_per_line)
+def _build_burn_subtitle_ass_text(original_text: str, *, font_name: str, font_size: int, font_color: str, font_alpha: float, background_alpha: float, subtitle_position: str, margin_v: int = 120, target_language: str = "", subtitle_language_mode: str = "auto", strip_punctuation: bool = True, auto_wrap: bool = True, max_chars_per_line: int = 16) -> str:
+    cues = _prepare_subtitle_cues(
+        original_text,
+        target_language=target_language,
+        subtitle_language_mode=subtitle_language_mode,
+        strip_punctuation=strip_punctuation,
+        auto_wrap=auto_wrap,
+        max_chars_per_line=max_chars_per_line,
+    )
     return _cues_to_ass(
         cues,
         font_name=font_name,
@@ -491,6 +529,7 @@ def _build_burn_subtitle_ass_text(original_text: str, *, font_name: str, font_si
         font_alpha=font_alpha,
         background_alpha=background_alpha,
         subtitle_position=subtitle_position,
+        margin_v=margin_v,
         auto_wrap=auto_wrap,
     )
 
@@ -515,6 +554,8 @@ class TencentSubtitleBurnNode:
                 "subtitle_language_mode": (SUBTITLE_LANGUAGE_MODES, {"default": "auto", "tooltip": "auto preserves the existing target-language behavior; source keeps original text; translation keeps translated text; bilingual keeps both lines."}),
                 "auto_wrap": ("BOOLEAN", {"default": True, "tooltip": "Automatically wrap long subtitles to fit the video width."}),
                 "max_chars_per_line": ("INT", {"default": 16, "min": 4, "max": 80, "step": 1, "tooltip": "When auto_wrap is enabled, insert a line break after this many characters."}),
+                "margin_v": ("INT", {"default": 120, "min": 0, "max": 1080, "step": 1, "tooltip": "Vertical margin in pixels. For bottom subtitles, a larger value moves the subtitles upward."}),
+                "strip_punctuation": ("BOOLEAN", {"default": True, "tooltip": "Remove punctuation before automatic line wrapping, while preserving decimal points and percent signs."}),
             },
             "optional": {
                 "video_file": ("STRING", {"forceInput": True}),
@@ -549,6 +590,8 @@ class TencentSubtitleBurnNode:
         subtitle_language_mode="auto",
         auto_wrap=True,
         max_chars_per_line=16,
+        margin_v=120,
+        strip_punctuation=True,
         video_file="",
         video_url="",
         vhs_video_info=None,
@@ -614,8 +657,10 @@ class TencentSubtitleBurnNode:
                 font_alpha=font_alpha,
                 background_alpha=background_alpha,
                 subtitle_position=subtitle_position,
+                margin_v=margin_v,
                 target_language=target_language,
                 subtitle_language_mode=subtitle_language_mode,
+                strip_punctuation=strip_punctuation,
                 auto_wrap=auto_wrap,
                 max_chars_per_line=max_chars_per_line,
             )
@@ -629,8 +674,10 @@ class TencentSubtitleBurnNode:
                 font_alpha=font_alpha,
                 background_alpha=background_alpha,
                 subtitle_position=subtitle_position,
+                margin_v=margin_v,
                 target_language=target_language,
                 subtitle_language_mode=subtitle_language_mode,
+                strip_punctuation=strip_punctuation,
                 auto_wrap=auto_wrap,
                 max_chars_per_line=max_chars_per_line,
             )

@@ -79,6 +79,8 @@
 - `subtitle_language_mode`
 - `auto_wrap`
 - `max_chars_per_line`
+- `margin_v`
+- `strip_punctuation`
 
 #### 输出
 - `video_file_path`
