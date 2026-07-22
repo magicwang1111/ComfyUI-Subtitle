@@ -12,14 +12,16 @@ sys.path.insert(0, REPO_ROOT)
 
 from py.api import (
     TencentInputSource,
+    create_burn_subtitle_task,
     create_smart_subtitle_task,
     download_file,
     load_tencent_cloud_config,
     sign_cos_url,
+    upload_file_to_cos,
     upload_file_to_oss,
     wait_for_task,
 )
-from py.nodes import _build_burn_subtitle_ass_text, _burn_subtitle_with_ffmpeg, _read_text_file
+from py.nodes import _build_burn_subtitle_ass_text, _read_text_file
 
 
 def emit(payload):
@@ -92,25 +94,37 @@ emit({
     "chars": len(burn_ass_text),
 })
 
-final_video_local_path = os.path.join(temp_dir, "integration_burn_video.mp4")
-ffmpeg_path, ffprobe_path, ffmpeg_encoder = _burn_subtitle_with_ffmpeg(
-    LOCAL_VIDEO_PATH,
-    burn_ass_local_path,
-    final_video_local_path,
-    configured_ffmpeg_path=config.ffmpeg_path,
-    configured_ffprobe_path=config.ffprobe_path,
-    configured_encoder=config.ffmpeg_encoder,
-    configured_hwaccel=config.ffmpeg_hwaccel,
+burn_subtitle_object = upload_file_to_cos(config, burn_ass_local_path)
+burn_subtitle_url = sign_cos_url(
+    config,
+    burn_subtitle_object.url,
+    valid_for_seconds=config.cos_signed_url_expires,
 )
-final_video_url, final_video_object_key = upload_file_to_oss(config, final_video_local_path, prefix=config.oss_output_prefix)
+emit({"stage": "burn_ass_uploaded", "storage": "COS", "object_key": burn_subtitle_object.object_key})
+
+burn_submit_summary, _, _ = create_burn_subtitle_task(
+    config,
+    input_source,
+    subtitle_url=burn_subtitle_url,
+)
+emit({"stage": "burn_submitted", "task_id": burn_submit_summary.task_id})
+
+burn_summary, _ = wait_for_task(config, burn_submit_summary.task_id, max_wait_seconds=540)
+if not burn_summary.video_urls:
+    raise RuntimeError("Burn subtitle task returned no video URLs.")
+
+final_video_url = sign_cos_url(
+    config,
+    burn_summary.video_urls[0],
+    valid_for_seconds=config.cos_signed_url_expires,
+)
+final_video_local_path = download_file(final_video_url, temp_dir, filename_prefix="integration_burn_video")
 emit({
     "stage": "done",
     "subtitle_task_id": subtitle_submit_summary.task_id,
-    "burn_engine": "local_ffmpeg",
-    "ffmpeg_path": ffmpeg_path,
-    "ffprobe_path": ffprobe_path,
-    "ffmpeg_encoder": ffmpeg_encoder,
-    "final_video_object_key": final_video_object_key,
+    "burn_task_id": burn_submit_summary.task_id,
+    "burn_engine": "tencent_mps",
+    "burn_status": burn_summary.status,
     "final_video_url_present": bool(final_video_url),
     "final_video_local_path": final_video_local_path,
     "temp_dir": temp_dir,

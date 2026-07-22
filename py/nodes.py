@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import textwrap
 import urllib.parse
 from pathlib import Path
@@ -12,10 +11,12 @@ import folder_paths
 
 from .api import (
     TencentInputSource,
+    create_burn_subtitle_task,
     create_smart_subtitle_task,
     download_file,
     load_tencent_cloud_config,
     sign_cos_url,
+    upload_file_to_cos,
     upload_file_to_oss,
     wait_for_task,
 )
@@ -144,141 +145,6 @@ def _write_text_output(text: str, filename_prefix: str, suffix: str) -> str:
     except Exception:
         pass
     return target_path
-
-
-def _find_binary_path(explicit_path: str, *names: str) -> str:
-    configured_path = str(explicit_path or "").strip()
-    if configured_path and os.path.isfile(configured_path):
-        return os.path.abspath(configured_path)
-    resolved_path = next((shutil.which(name) for name in names if shutil.which(name)), None)
-    if resolved_path:
-        return resolved_path
-    raise RuntimeError(f"Required local binary was not found: {names[0]}")
-
-
-def _find_ffmpeg_path(explicit_path: str = "") -> str:
-    try:
-        return _find_binary_path(explicit_path, "ffmpeg", "ffmpeg.exe")
-    except RuntimeError:
-        pass
-    ffmpeg_path = None
-    try:
-        from imageio_ffmpeg import get_ffmpeg_exe
-
-        ffmpeg_path = get_ffmpeg_exe()
-    except Exception:
-        pass
-    if ffmpeg_path:
-        return ffmpeg_path
-    raise RuntimeError("Local FFmpeg is required for subtitle burning. Configure ffmpeg_path or add ffmpeg to PATH.")
-
-
-def _probe_ffmpeg_encoder(ffmpeg_path: str, encoder: str) -> bool:
-    try:
-        subprocess.run(
-            [
-                ffmpeg_path,
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-f",
-                "lavfi",
-                "-i",
-                "color=c=black:s=640x360:r=30:d=0.2",
-                "-frames:v",
-                "1",
-                "-c:v",
-                encoder,
-                "-f",
-                "null",
-                "-",
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-        )
-        return True
-    except Exception:
-        return False
-
-
-def _resolve_ffmpeg_encoder(ffmpeg_path: str, configured_encoder: str) -> str:
-    encoder = str(configured_encoder or "auto").strip() or "auto"
-    if encoder != "auto":
-        return encoder
-    for candidate in ("h264_nvenc", "h264_qsv", "h264_amf"):
-        if _probe_ffmpeg_encoder(ffmpeg_path, candidate):
-            return candidate
-    return "libx264"
-
-
-def _ffmpeg_output_args(encoder: str) -> list[str]:
-    args = ["-c:v", encoder]
-    if encoder in {"libx264", "libx265"}:
-        args.extend(["-preset", "medium", "-crf", "18"])
-    elif encoder.endswith("_nvenc"):
-        args.extend(["-preset", "p5", "-cq", "18"])
-    else:
-        args.extend(["-preset", "medium", "-crf", "18"])
-    return [*args, "-pix_fmt", "yuv420p"]
-
-
-def _burn_subtitle_with_ffmpeg(
-    input_video_path: str,
-    ass_file_path: str,
-    output_video_path: str,
-    *,
-    configured_ffmpeg_path: str = "",
-    configured_ffprobe_path: str = "",
-    configured_encoder: str = "auto",
-    configured_hwaccel: str = "",
-) -> tuple[str, str, str]:
-    ffmpeg_path = _find_ffmpeg_path(configured_ffmpeg_path)
-    ffprobe_path = _find_binary_path(configured_ffprobe_path, "ffprobe", "ffprobe.exe")
-    encoder = _resolve_ffmpeg_encoder(ffmpeg_path, configured_encoder)
-    ass_path = os.path.abspath(ass_file_path)
-    ass_dir = os.path.dirname(ass_path)
-    ass_filename = os.path.basename(ass_path).replace("'", r"\'").replace(":", r"\:")
-    input_args = ["-hwaccel", configured_hwaccel] if str(configured_hwaccel or "").strip() else []
-    output_path = os.path.abspath(output_video_path)
-    command = [
-        ffmpeg_path,
-        "-v",
-        "error",
-        "-y",
-        *input_args,
-        "-i",
-        os.path.abspath(input_video_path),
-        "-map",
-        "0:v:0",
-        "-map",
-        "0:a?",
-        "-vf",
-        f"ass=filename='{ass_filename}'",
-        *_ffmpeg_output_args(encoder),
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-movflags",
-        "+faststart",
-        output_path,
-    ]
-    result = subprocess.run(command, cwd=ass_dir, capture_output=True, text=True)
-    if result.returncode != 0:
-        message = (result.stderr or result.stdout or "Unknown FFmpeg error").strip()
-        raise RuntimeError(f"Local FFmpeg subtitle burn failed: {message[-2000:]}")
-    if not os.path.isfile(output_path) or os.path.getsize(output_path) <= 0:
-        raise RuntimeError("Local FFmpeg subtitle burn completed without a valid output video.")
-    probe = subprocess.run(
-        [ffprobe_path, "-v", "error", "-show_entries", "stream=codec_type", "-of", "json", output_path],
-        capture_output=True,
-        text=True,
-    )
-    if probe.returncode != 0 or not any(stream.get("codec_type") == "video" for stream in json.loads(probe.stdout or "{}").get("streams", [])):
-        raise RuntimeError("Local FFmpeg subtitle burn output does not contain a valid video stream.")
-    return ffmpeg_path, ffprobe_path, encoder
 
 
 def _parse_timestamp_to_seconds(raw: str) -> float:
@@ -637,47 +503,74 @@ class TencentSubtitleBurnNode:
             burn_ass_local_path = _write_text_output(burn_ass_text, f"{DEFAULT_SUBTITLE_FILENAME_PREFIX}_{filename_prefix}_burn", "ass")
             _log_subtitle_burn("burn_ass_written", local_path=burn_ass_local_path, cue_count=subtitle_cue_count)
 
-            current_stage = "local_burn_preparing"
-            _, _, _, local_video_path = _make_output_target(f"{DEFAULT_VIDEO_FILENAME_PREFIX}_{filename_prefix}", "mp4")
-            _log_subtitle_burn("local_burn_started", input_video_path=local_video_input, ass_file_path=burn_ass_local_path)
-            current_stage = "local_burn_running"
-            ffmpeg_path, ffprobe_path, ffmpeg_encoder = _burn_subtitle_with_ffmpeg(
-                local_video_input,
-                burn_ass_local_path,
-                local_video_path,
-                configured_ffmpeg_path=config.ffmpeg_path,
-                configured_ffprobe_path=config.ffprobe_path,
-                configured_encoder=config.ffmpeg_encoder,
-                configured_hwaccel=config.ffmpeg_hwaccel,
+            current_stage = "burn_subtitle_uploading"
+            burn_subtitle_object = upload_file_to_cos(config, burn_ass_local_path)
+            burn_subtitle_url = sign_cos_url(
+                config,
+                burn_subtitle_object.url,
+                valid_for_seconds=config.cos_signed_url_expires,
+            )
+            _log_subtitle_burn("burn_ass_uploaded", storage="COS", object_key=burn_subtitle_object.object_key)
+
+            current_stage = "burn_submitting"
+            burn_submit_summary, _, burn_submit_response = create_burn_subtitle_task(
+                config,
+                input_source,
+                subtitle_url=burn_subtitle_url,
+            )
+            _log_subtitle_burn("burn_submitted", task_id=burn_submit_summary.task_id)
+
+            current_stage = "burn_waiting"
+            burn_summary, burn_response = wait_for_task(
+                config,
+                burn_submit_summary.task_id,
+                on_progress=lambda summary, elapsed: _log_subtitle_burn(
+                    "burn_status", task_id=summary.task_id, status=summary.status, elapsed_seconds=round(elapsed, 1)
+                ),
+            )
+            if not burn_summary.video_urls:
+                raise RuntimeError(f"Burn subtitle task completed without video URLs: {burn_summary.to_dict()}")
+            _log_subtitle_burn("burn_finished", task_id=burn_summary.task_id, video_count=len(burn_summary.video_urls))
+
+            current_stage = "video_downloading"
+            remote_video_url = sign_cos_url(
+                config,
+                burn_summary.video_urls[0],
+                valid_for_seconds=config.cos_signed_url_expires,
+            )
+            local_video_path = download_file(
+                remote_video_url,
+                folder_paths.get_output_directory(),
+                filename_prefix=f"{DEFAULT_VIDEO_FILENAME_PREFIX}_{filename_prefix}",
             )
             try:
                 _register_output_asset(local_video_path)
             except Exception:
                 pass
-
-            current_stage = "final_video_uploading"
-            final_video_url, oss_output_object_key = upload_file_to_oss(config, local_video_path, prefix=config.oss_output_prefix)
-            _log_subtitle_burn("final_video_uploaded", storage="OSS", object_key=oss_output_object_key)
-            _log_subtitle_burn("done", subtitle_task_id=subtitle_summary.task_id, burn_engine="local_ffmpeg", ffmpeg_encoder=ffmpeg_encoder, output_path=local_video_path)
+            _log_subtitle_burn(
+                "done",
+                subtitle_task_id=subtitle_summary.task_id,
+                burn_task_id=burn_summary.task_id,
+                burn_engine="tencent_mps",
+                output_path=local_video_path,
+            )
 
             raw_payload = {
                 "oss_video_object_key": oss_video_object_key,
-                "oss_output_object_key": oss_output_object_key,
+                "burn_subtitle_object": burn_subtitle_object.to_dict(),
                 "subtitle_submit": subtitle_submit_response,
                 "subtitle_result": subtitle_response,
-                "burn_engine": "local_ffmpeg",
-                "ffmpeg_path": ffmpeg_path,
-                "ffprobe_path": ffprobe_path,
-                "ffmpeg_encoder": ffmpeg_encoder,
-                "ffmpeg_hwaccel": config.ffmpeg_hwaccel,
+                "burn_submit": burn_submit_response,
+                "burn_result": burn_response,
+                "burn_engine": "tencent_mps",
             }
 
             return (
                 local_video_path,
                 local_subtitle_path,
-                final_video_url,
+                remote_video_url,
                 remote_subtitle_url,
-                "FINISH",
+                burn_summary.status,
                 json.dumps(raw_payload, ensure_ascii=False, indent=2),
             )
         except Exception as exc:

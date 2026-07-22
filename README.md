@@ -3,8 +3,8 @@
 当前版本已改为：
 - **输入视频上传到阿里云 OSS**
 - **腾讯云 MPS 使用 OSS 签名 URL 作为输入**
-- **智能字幕输出写回腾讯云 COS**
-- **本地 FFmpeg 完成字幕压制，保存本地并上传最终 MP4 到 OSS**
+- **智能字幕与字幕压制均由腾讯云 MPS 完成**
+- **压制后的成片写回腾讯云 COS，再下载到 ComfyUI 输出目录**
 
 > 当前采用 OSS 输入 + 腾讯云 COS 输出的混合链路。默认腾讯云地域为 `ap-guangzhou`，默认 COS Bucket 为 `goumee-1444407842`。
 
@@ -24,27 +24,23 @@
 - `tencent_poll_interval`
 - `tencent_max_wait_seconds`
 - `tencent_subtitle_definition`
+- `tencent_transcode_definition`
 
 ### COS 存储配置
 - `tencent_cos_bucket`
+- `tencent_cos_input_prefix`
 - `tencent_cos_output_prefix`
+- `tencent_cos_burn_output_prefix`
+- `tencent_cos_signed_url_expires`
 
-### OSS 输入与最终视频配置
+### OSS 输入配置
 - `area`
 - `oss_endpoint`
 - `oss_access_key_id`
 - `oss_access_key_secret`
 - `oss_bucket`
 - `oss_prefix`：输入视频目录，默认 `GouMee-subtitle/input`
-- `oss_output_prefix`：最终视频目录，默认 `GouMee-subtitle/subtitle-output`
 - `oss_signed_url_expires`
-
-### 本地 FFmpeg
-- `ffmpeg_path`：留空时从系统 `PATH` 查找 `ffmpeg`
-- `ffprobe_path`：留空时从系统 `PATH` 查找 `ffprobe`
-- `ffmpeg_encoder`：默认 `auto`，依次探测 `h264_nvenc / h264_qsv / h264_amf`，最后回退 `libx264`
-- `ffmpeg_hwaccel`：可选硬件解码提示，例如 `cuda`
-- FFmpeg 构建必须包含 `libass` 与 `libx264`
 
 ## 当前提供的前端节点
 
@@ -57,8 +53,8 @@
 - 下载生成的字幕文件
 - 生成本地字幕文件（`vtt / srt / ass`）
 - 在本地生成用于压制的 ASS 字幕
-- 调用本地 FFmpeg 压制字幕并保存最终视频
-- 上传最终 MP4 到 OSS，并返回签名 `video_url`
+- 把 ASS 上传到腾讯云 COS，并调用腾讯云 MPS 云端压制
+- 下载 MPS 成片到本地输出目录，并返回 COS 签名 `video_url`
 
 #### 输入
 - `local_video`
@@ -127,13 +123,14 @@ Tencent Subtitle Burn
 - 主节点支持 `video` + `file_path`
 - 腾讯云 MPS 以 OSS 签名 URL 读取输入视频
 - 智能字幕结果输出到腾讯云 COS
-- 本地 FFmpeg 使用 ASS 压制并输出最终视频
-- 最终视频上传 OSS，并通过 `video_url` 交给下游预览节点
+- 压制用 ASS 上传到腾讯云 COS
+- 腾讯云 MPS 云端完成字幕压制，成片输出到 COS
+- 成片下载到本地，并通过 COS `video_url` 交给下游预览节点
 - 预览节点保留音频并输出本地可预览视频
 
 ### 存储链路说明
 - 输入视频上传到 OSS，并通过限时签名 URL 交给 MPS
 - 智能字幕文件通过 `OutputStorage` 写入腾讯云 COS
-- 压制用 ASS 保存在本地，不再提交 MPS 压制任务
-- 最终视频保存在本地，并上传至 OSS 的 `GouMee-subtitle/subtitle-output/`
+- 压制用 ASS 上传到 COS，并通过限时签名 URL 交给 MPS
+- 压制成片由 MPS 写入 COS，再下载到 ComfyUI 本地输出目录
 - `oss_signed_url_expires` 必须覆盖任务排队与处理时间，默认值为 86400 秒
